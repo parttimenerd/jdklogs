@@ -21,7 +21,7 @@ jobs:
   regen:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Compute cache month
         id: cachemonth
@@ -31,7 +31,7 @@ jobs:
       # BUILT and RUN under JDK 21 (see generator/pom.xml). This is unrelated to which
       # JDK *source* we scan.
       - name: Set up JDK 21 (to build/run the generator)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
@@ -72,7 +72,7 @@ jobs:
       # only here, once a month. The month suffix makes each regen write a fresh, immutable
       # entry (actions/cache never overwrites an existing exact key).
       - name: Save generated data to cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             data/head.json
