@@ -415,3 +415,59 @@ test("wizard group head shows an unavailable count for a GC with dead tags", asy
     page.locator("summary.wiz-group-head").filter({ hasText: /\d+ unavailable/ }).first()
   ).toBeVisible();
 });
+
+test("the active tab persists in the hash and is restored on reload", async ({ page }) => {
+  await page.getByRole("button", { name: /^Summary/ }).click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain("tab=tab-summary");
+
+  await page.reload();
+  await expect(page.locator("#tab-summary")).toHaveClass(/active/);
+});
+
+test("the Sites filter query persists in the hash and is prefilled on reload", async ({ page }) => {
+  await setConfig(page, "gc*=trace");
+  const filter = page.locator(".sites-filter");
+  await filter.fill("heap");
+  await page.waitForTimeout(200);
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain("q=heap");
+
+  await page.reload();
+  await expect(page.locator(".results-header")).toBeVisible();
+  await expect(page.locator(".sites-filter")).toHaveValue("heap");
+  await expect(page.locator(".results-header")).toContainText("match");
+});
+
+test("block 'Link' button copies a link, and navigating to #b=<id> scrolls the block into view", async ({ page }) => {
+  await setConfig(page, "gc*=info");
+  const linkBtn = page.locator(".block-link-btn").first();
+  await expect(linkBtn).toBeVisible();
+  await expect(linkBtn).toHaveText("Link");
+  await linkBtn.click();
+  await expect(linkBtn).toHaveText("Copied!");
+
+  // The button's block has a #block-<id> DOM id; navigate to that block via the hash and confirm the
+  // deep-link scrolls it into view. Block ids contain `/` and `|`, so we can't use them as CSS
+  // selectors — query by getElementById in-page instead. (The .block-flash highlight is a 1.5s
+  // transient we don't assert on directly, as its lifetime races the test harness.)
+  const blockId = await page
+    .locator(".block")
+    .first()
+    .evaluate((el) => el.id.replace(/^block-/, ""));
+  const hash = await page.evaluate(() => location.hash.replace(/^#/, ""));
+  const p = new URLSearchParams(hash);
+  p.set("b", blockId);
+  await page.goto("/#" + p.toString());
+  await expect(page.locator(".results-header")).toBeVisible();
+  // The target block exists and is scrolled into the viewport (deep-link landed on it).
+  await expect
+    .poll(() =>
+      page.evaluate((id) => {
+        const el = document.getElementById("block-" + id);
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.top < window.innerHeight && r.bottom > 0;
+      }, blockId)
+    )
+    .toBe(true);
+});
+

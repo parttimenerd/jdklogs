@@ -24,7 +24,10 @@ export function renderFiringSites(
   root: HTMLElement,
   data: VersionData,
   fires: SiteJson[],
-  gc: string
+  gc: string,
+  initialQuery = "",
+  onQueryChange?: (q: string) => void,
+  blockLinkFor?: (blockId: string) => string
 ): void {
   root.innerHTML = "";
   if (fires.length === 0) {
@@ -127,7 +130,7 @@ export function renderFiringSites(
           fileEl.appendChild(h);
           root.appendChild(fileEl);
         }
-        fileEl!.appendChild(renderBlock(data, data.blocks[u.rep.blockId], u.rep, u.blockSites, gc));
+        fileEl!.appendChild(renderBlock(data, u.rep.blockId, data.blocks[u.rep.blockId], u.rep, u.blockSites, gc, blockLinkFor));
       }
     };
 
@@ -169,6 +172,7 @@ export function renderFiringSites(
   // Full render, then re-filter on each keystroke against the precomputed units.
   const apply = (query: string): void => {
     const q = query.trim().toLowerCase();
+    onQueryChange?.(query);
     const list = q ? units.filter((u) => matchUnit(u, q)) : units;
     if (q) {
       summary.textContent = `${list.length} of ${units.length} context blocks match "${query}"`;
@@ -180,18 +184,22 @@ export function renderFiringSites(
   };
 
   filter.addEventListener("input", () => apply(filter.value));
-  apply("");
+  filter.value = initialQuery;
+  apply(initialQuery);
 }
 
 function renderBlock(
   data: VersionData,
+  blockId: string,
   block: Block,
   rep: SiteJson,
   blockSites: SiteJson[],
-  gc: string
+  gc: string,
+  blockLinkFor?: (blockId: string) => string
 ): HTMLElement {
   const blockEl = document.createElement("div");
   blockEl.className = "block";
+  blockEl.id = "block-" + blockId;
 
   const meta = document.createElement("div");
   meta.className = "block-meta";
@@ -216,6 +224,16 @@ function renderBlock(
   copyBtn.title = "Copy this snippet's source";
   copyBtn.addEventListener("click", () => copyToClipboard(block.snippet, copyBtn));
   meta.appendChild(copyBtn);
+
+  if (blockLinkFor) {
+    const linkBtn = document.createElement("button");
+    linkBtn.type = "button";
+    linkBtn.className = "block-link-btn";
+    linkBtn.textContent = "Link";
+    linkBtn.title = "Copy a shareable link to this block";
+    linkBtn.addEventListener("click", () => copyToClipboard(blockLinkFor(blockId), linkBtn));
+    meta.appendChild(linkBtn);
+  }
 
   const chips = document.createElement("span");
   chips.className = "chips";

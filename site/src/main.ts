@@ -28,6 +28,8 @@ interface State {
   gc: string;
   platform: string;
   config: string;
+  tab: string;
+  sitesQuery: string;
   data: VersionData | null;
   tags: TagsData | null;
   mappings: JfrMapping[];
@@ -35,9 +37,11 @@ interface State {
 }
 
 const state: State = {
-  version: VERSIONS[0], gc: "G1", platform: "linux", config: "gc*=info",
+  version: VERSIONS[0], gc: "G1", platform: "linux", config: "gc*=info", tab: "tab-sites", sitesQuery: "",
   data: null, tags: null, mappings: [], coverage: [],
 };
+
+const PANEL_IDS = ["tab-sites", "tab-summary", "tab-coverage", "tab-log"];
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -56,6 +60,9 @@ async function loadData(version: string): Promise<void> {
 
 let wizard: Wizard | null = null;
 let logSearch: LogSearch | null = null;
+// Tags with at least one log site for the current gc/platform. Shared by the wizard (grey-out) and
+// the autocomplete dropdown (dead-tag signal); recomputed in updateWizardAvailability().
+let availableTags: Set<string> | null = null;
 
 // Current derived results, recomputed on config/gc/version change and consumed lazily per tab. Only
 // the active tab is rendered on each change; the others are marked dirty and rendered when shown —
@@ -109,12 +116,26 @@ function activePanelId(): string {
   return active?.dataset.panel ?? "tab-sites";
 }
 
+/** Build a shareable href pointing at a specific firing block, without leaving `b` in the resting
+ *  hash: write the state with the extra `block` field, snapshot the URL, then rewrite it clean. */
+function blockLinkFor(blockId: string): string {
+  writeUrlState({ ...state, tab: "tab-sites", block: blockId });
+  const href = location.href;
+  writeUrlState(state);
+  return href;
+}
+
 /** Render one tab panel from the current derived results, if it hasn't been rendered since recompute. */
 function renderPanel(panelId: string): void {
   if (!state.data || !derived) return;
   const { fires, warnings, vol } = derived;
   if (panelId === "tab-sites" && !rendered.sites) {
-    renderFiringSites($("#tab-sites"), state.data, fires, state.gc);
+    renderFiringSites(
+      $("#tab-sites"), state.data, fires, state.gc,
+      state.sitesQuery,
+      (q) => { state.sitesQuery = q; writeUrlState(state); },
+      blockLinkFor
+    );
     rendered.sites = true;
   } else if (panelId === "tab-summary" && !rendered.summary) {
     renderSummary($("#tab-summary"), fires, warnings, vol);
@@ -138,11 +159,12 @@ function rerender(): void {
  * the -Xlog config (it reflects the data set, not the selector), so this is driven by gc/platform.
  */
 function updateWizardAvailability(): void {
-  if (!wizard || !state.data) return;
+  if (!state.data) return;
   const visible = filterByGc(filterByPlatform(state.data.sites, state.platform), state.gc);
   const available = new Set<string>();
   for (const s of visible) for (const t of s.tags) available.add(t);
-  wizard.setAvailableTags(available);
+  availableTags = available;
+  wizard?.setAvailableTags(available);
 }
 
 function setConfig(text: string, fromWizard = false): void {
@@ -166,12 +188,12 @@ function setupAutocomplete(): void {
 
   const refresh = () => {
     if (!state.tags) return;
-    items = suggest(input.value, input.selectionStart ?? input.value.length, state.tags.tags);
+    items = suggest(input.value, input.selectionStart ?? input.value.length, state.tags.tags, availableTags ?? undefined);
     drop.innerHTML = "";
     if (items.length === 0) { close(); return; }
     items.forEach((s, i) => {
       const el = document.createElement("div");
-      el.className = "ac-item" + (i === active ? " active" : "");
+      el.className = "ac-item" + (i === active ? " active" : "") + (s.dead ? " ac-dead" : "");
       el.innerHTML = `<span class="ac-text">${s.text}</span>` + (s.detail ? `<span class="ac-detail">${s.detail}</span>` : "");
       el.addEventListener("mousedown", (e) => {
         e.preventDefault();
@@ -204,18 +226,28 @@ function setupAutocomplete(): void {
 }
 
 // --- tabs ------------------------------------------------------------------
+/** Activate a tab panel by id: toggle the active classes, lazily render it, and (for the log tab)
+ *  load the sample log. Does NOT write the URL — callers decide whether the change is persisted. */
+function activateTab(panelId: string): void {
+  const tab = document.querySelector<HTMLElement>(`.tab[data-panel="${panelId}"]`);
+  if (!tab) return;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+  document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+  tab.classList.add("active");
+  $("#" + panelId).classList.add("active");
+  renderPanel(panelId);
+  if (panelId === "tab-log" && logSearch && state.data) {
+    logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc]);
+  }
+}
+
 function setupTabs(): void {
   document.querySelectorAll<HTMLElement>(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
-      tab.classList.add("active");
-      const panel = $("#" + tab.dataset.panel);
-      panel.classList.add("active");
-      renderPanel(tab.dataset.panel!);   // lazy: render this tab now if it was dirtied since last recompute
-      if (tab.dataset.panel === "tab-log" && logSearch && state.data) {
-        logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc]);
-      }
+      const panel = tab.dataset.panel!;
+      state.tab = panel;
+      writeUrlState(state);
+      activateTab(panel);
     });
   });
 }
@@ -257,6 +289,9 @@ async function main(): Promise<void> {
   if (url.gc && GCS.includes(url.gc)) state.gc = url.gc;
   if (url.platform && PLATFORM_VALUES.includes(url.platform)) state.platform = url.platform;
   if (url.config !== undefined) state.config = url.config;
+  if (url.tab && PANEL_IDS.includes(url.tab)) state.tab = url.tab;
+  if (url.q) state.sitesQuery = url.q;
+  const deepLinkBlock = url.block;
 
   // version selector
   const vsel = $("#version") as HTMLSelectElement;
@@ -346,7 +381,27 @@ async function main(): Promise<void> {
   const input = $("#config") as HTMLInputElement;
   input.value = state.config;
   wizard.syncFromConfig(state.config);
-  rerender();
+
+  // Restore the active tab from the URL before the first render, so a shared link lands on the
+  // right panel (and only that panel renders — the others stay lazy).
+  recompute();
+  rendered.sites = rendered.summary = rendered.coverage = false;
+  activateTab(state.tab);
+
+  // Deep-link to a specific firing block: force the Sites tab, scroll it into view, and flash it.
+  // Defer to the next frame so the just-rendered block list is laid out before we measure/scroll.
+  if (deepLinkBlock) {
+    if (state.tab !== "tab-sites") { state.tab = "tab-sites"; activateTab("tab-sites"); }
+    requestAnimationFrame(() => {
+      const target = document.getElementById("block-" + deepLinkBlock);
+      if (target) {
+        target.scrollIntoView({ block: "center" });
+        target.classList.add("block-flash");
+        setTimeout(() => target.classList.remove("block-flash"), 1500);
+      }
+    });
+  }
+
   input.focus();
   input.select();
 }

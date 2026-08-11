@@ -130,6 +130,14 @@ details.wiz-group[open] > .wiz-group-head::before { content: "▾"; }
 .copy-src-btn { font-size: 11px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 5px; background: none; color: var(--muted); cursor: pointer; }
 .copy-src-btn:hover { border-color: var(--accent); color: var(--accent); }
 .copy-src-btn.copied { border-color: #16a34a; color: #16a34a; }
+.block-link-btn { font-size: 11px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 5px; background: none; color: var(--muted); cursor: pointer; }
+.block-link-btn:hover { border-color: var(--accent); color: var(--accent); }
+.block-link-btn.copied { border-color: #16a34a; color: #16a34a; }
+@keyframes block-flash {
+  0% { background: rgba(37, 99, 235, .18); box-shadow: 0 0 0 2px var(--accent); }
+  100% { background: transparent; box-shadow: 0 0 0 2px transparent; }
+}
+.block-flash { animation: block-flash 1.5s ease-out; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
 .chip { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #e5e7eb; font-family: ui-monospace, monospace; }
 .chip.lvl-trace { background: #ede9fe; } .chip.lvl-debug { background: #dbeafe; }
