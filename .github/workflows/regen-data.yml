@@ -47,7 +47,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/openjdk/jdk.git    jdk-src-head
           git clone --depth 1 https://github.com/openjdk/jdk21u.git jdk-src-21
-          git clone --depth 1 https://github.com/openjdk/jdk25.git  jdk-src-25
+          git clone --depth 1 https://github.com/openjdk/jdk25u.git jdk-src-25
           echo "HEAD_SHA=$(git -C jdk-src-head rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "V21_SHA=$(git -C jdk-src-21 rev-parse HEAD)"    >> "$GITHUB_ENV"
           echo "V25_SHA=$(git -C jdk-src-25 rev-parse HEAD)"    >> "$GITHUB_ENV"
@@ -57,7 +57,7 @@ jobs:
           JAR=generator/target/jdklogs-generator-0.1.0-SNAPSHOT.jar
           java -jar "$JAR" generate jdk-src-head head openjdk/jdk    "$HEAD_SHA" data
           java -jar "$JAR" generate jdk-src-21   21   openjdk/jdk21u "$V21_SHA"  data
-          java -jar "$JAR" generate jdk-src-25   25   openjdk/jdk25  "$V25_SHA"  data
+          java -jar "$JAR" generate jdk-src-25   25   openjdk/jdk25u "$V25_SHA"  data
           java -jar "$JAR" tags jdk-src-head data
 
       # Runnable JDKs for the sample capture (source scan above is independent of these). head has no
