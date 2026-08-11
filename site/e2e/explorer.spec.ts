@@ -389,3 +389,29 @@ test("the wizard greys out and sorts down tags with no sites for the current GC"
   });
   expect(groupsLiveAfterDead).toBe(false);
 });
+
+test("wizard 'Hide unavailable' removes dead rows and restores them on untick", async ({ page }) => {
+  await page.locator("#wizard-toggle").click();
+  await expect(page.locator("#wizard")).toHaveClass(/open/);
+
+  const dead = () => page.locator(".wiz-row.wiz-unavailable").count();
+  expect(await dead()).toBeGreaterThan(0);
+
+  const hide = page.locator(".wiz-hide-unavail input[type=checkbox]");
+  await hide.check();
+  await page.waitForTimeout(100);
+  expect(await dead()).toBe(0);
+
+  await hide.uncheck();
+  await page.waitForTimeout(100);
+  expect(await dead()).toBeGreaterThan(0);
+});
+
+test("wizard group head shows an unavailable count for a GC with dead tags", async ({ page }) => {
+  await page.locator("#wizard-toggle").click();
+  await expect(page.locator("#wizard")).toHaveClass(/open/);
+  // At least one group summary reports "N unavailable" under the default G1 selection.
+  await expect(
+    page.locator("summary.wiz-group-head").filter({ hasText: /\d+ unavailable/ }).first()
+  ).toBeVisible();
+});

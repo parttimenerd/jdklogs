@@ -3,15 +3,18 @@
 
 import { LEVELS, TagInfo } from "./types";
 
-export interface Suggestion { text: string; kind: "tag" | "level" | "all"; detail?: string; }
+export interface Suggestion { text: string; kind: "tag" | "level" | "all"; detail?: string; dead?: boolean; }
 
 /**
  * Suggest completions for the token under the cursor in a config string.
  * Rules of thumb mirroring the grammar:
  *  - after `=` → suggest levels
  *  - inside a tag token (after `,` or `+` or at start) → suggest tags (+ `all`)
+ *
+ * When `available` is provided, tags with no log sites for the current gc/platform are kept but
+ * marked dead (muted, with a "no sites for this GC" note) and sorted after the live ones.
  */
-export function suggest(input: string, caret: number, tags: TagInfo[]): Suggestion[] {
+export function suggest(input: string, caret: number, tags: TagInfo[], available?: Set<string>): Suggestion[] {
   const before = input.slice(0, caret);
   // find the current token boundaries
   const tokenStart = Math.max(
@@ -30,8 +33,17 @@ export function suggest(input: string, caret: number, tags: TagInfo[]): Suggesti
   const out: Suggestion[] = [];
   if ("all".startsWith(token) && token.length > 0) out.push({ text: "all", kind: "all", detail: "every tag set" });
   for (const t of tags) {
-    if (t.name.startsWith(token)) out.push({ text: t.name, kind: "tag", detail: t.description });
+    if (!t.name.startsWith(token)) continue;
+    const dead = available !== undefined && !available.has(t.name);
+    out.push({
+      text: t.name,
+      kind: "tag",
+      detail: dead ? `${t.description} · no sites for this GC` : t.description,
+      dead,
+    });
   }
+  // Bias live tags to the top (stable) so dead ones don't crowd out useful completions in the cap.
+  out.sort((a, b) => Number(a.dead ?? false) - Number(b.dead ?? false));
   return out.slice(0, 12);
 }
 

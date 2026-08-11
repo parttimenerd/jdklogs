@@ -20,6 +20,8 @@ export class Wizard {
   private rows = new Map<string, WizardRow>();
   // Which <details> groups the user has expanded (persists across re-renders within a session).
   private open = new Set<string>();
+  // When on, drop dead (unavailable) tags and all-dead groups from the rendered list entirely.
+  private hideUnavailable = false;
   // Tags that have at least one log site for the current version/gc/platform. A tag outside this
   // set can never fire under the current selection, so we grey it out and sort it below the live
   // tags in its group. `null` means "not yet computed" — treat every tag as available.
@@ -86,14 +88,28 @@ export class Wizard {
     const filter = (existing?.value ?? "").toLowerCase();
     this.root.innerHTML = "";
 
+    const bar = el("div", "wiz-bar");
     const search = el("input", "wiz-filter") as HTMLInputElement;
     search.setAttribute("type", "search");
     search.setAttribute("placeholder", "Filter tags…");
     search.value = filter;
     search.addEventListener("input", () => this.render());
-    this.root.appendChild(search);
+    bar.appendChild(search);
 
-    const shown = this.tags.filter((t) => !filter || t.name.includes(filter) || t.description.toLowerCase().includes(filter));
+    // "Hide unavailable" only matters once we know which tags are live for the current gc/platform.
+    if (this.available !== null) {
+      const hideLabel = el("label", "wiz-hide-unavail");
+      const hideCb = el("input", "") as HTMLInputElement;
+      hideCb.type = "checkbox";
+      hideCb.checked = this.hideUnavailable;
+      hideCb.addEventListener("change", () => { this.hideUnavailable = hideCb.checked; this.render(); });
+      hideLabel.append(hideCb, document.createTextNode(" Hide unavailable"));
+      bar.appendChild(hideLabel);
+    }
+    this.root.appendChild(bar);
+
+    let shown = this.tags.filter((t) => !filter || t.name.includes(filter) || t.description.toLowerCase().includes(filter));
+    if (this.hideUnavailable) shown = shown.filter((t) => this.isAvailable(t.name));
 
     // Bucket the visible tags by their main tag (primary subsystem).
     const groups = new Map<string, TagInfo[]>();
@@ -132,7 +148,12 @@ export class Wizard {
 
     const summary = document.createElement("summary");
     summary.className = "wiz-group-head";
-    summary.textContent = `${primary} (${tags.length}` + (enabled ? `, ${enabled} on` : "") + `)`;
+    const unavail = this.available !== null ? tags.length - live : 0;
+    summary.textContent =
+      `${primary} (${tags.length}` +
+      (enabled ? `, ${enabled} on` : "") +
+      (unavail > 0 ? `, ${unavail} unavailable` : "") +
+      `)`;
     details.appendChild(summary);
 
     // Live tags first, then dead ones; stable within each class so the source order is preserved.
