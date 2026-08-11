@@ -95,7 +95,7 @@ export function renderCoverageTab(
   }
 
   const volumes = eventVolumes(fires, mappings, rules, data.volumeStats, gc);
-  root.appendChild(renderCoverage(data, fires, mappings, rules, gc));
+  root.appendChild(renderCoverage(data, fires, mappings, rules, gc, volumes));
   root.appendChild(renderEventIndex(fires, mappings, rules, volumes));
 }
 
@@ -132,7 +132,8 @@ function renderCoverage(
   fires: SiteJson[],
   mappings: JfrMapping[],
   rules: CoverageRule[],
-  gc: string
+  gc: string,
+  volumes: Map<string, EventVolume>
 ): HTMLElement {
   const sec = document.createElement("section");
   sec.className = "coverage";
@@ -142,13 +143,65 @@ function renderCoverage(
   h.textContent = "JFR coverage";
   sec.appendChild(h);
 
+  // Clickable rollup: each count toggles a shared detail panel below the bar. Covered/partial expand
+  // to their sites grouped by covering JFR event; uncovered expands to the tag-set gap worklist.
   const bar = document.createElement("div");
   bar.className = "cov-summary";
-  bar.innerHTML =
-    `<span class="cov-covered">● ${covered.length} covered</span>` +
-    `<span class="cov-partial">◐ ${partial.length} partial</span>` +
-    `<span class="cov-uncovered">○ ${uncovered.length} uncovered</span>`;
+
+  const detail = document.createElement("div");
+  detail.className = "cov-detail hidden";
+
+  const renderers: Record<string, () => HTMLElement> = {
+    covered: () => renderBucketByEvent(covered, "covered", data, mappings, rules, volumes),
+    partial: () => renderBucketByEvent(partial, "partial", data, mappings, rules, volumes),
+    uncovered: () => renderUncovered(data, uncovered, gc),
+  };
+  let open = "";
+  const counts: Record<string, number> = {
+    covered: covered.length,
+    partial: partial.length,
+    uncovered: uncovered.length,
+  };
+
+  const toggle = (bucket: string, span: HTMLElement): void => {
+    if (open === bucket) {
+      open = "";
+      detail.classList.add("hidden");
+      detail.innerHTML = "";
+      span.setAttribute("aria-expanded", "false");
+      return;
+    }
+    open = bucket;
+    detail.innerHTML = "";
+    detail.appendChild(renderers[bucket]());
+    detail.classList.remove("hidden");
+    for (const el of bar.querySelectorAll<HTMLElement>("[data-bucket]")) {
+      el.setAttribute("aria-expanded", el.dataset.bucket === bucket ? "true" : "false");
+    }
+  };
+
+  for (const [bucket, glyph, cls] of [
+    ["covered", "●", "cov-covered"],
+    ["partial", "◐", "cov-partial"],
+    ["uncovered", "○", "cov-uncovered"],
+  ] as const) {
+    const span = document.createElement("span");
+    span.className = cls;
+    span.dataset.bucket = bucket;
+    span.setAttribute("role", "button");
+    span.setAttribute("tabindex", "0");
+    span.setAttribute("aria-expanded", "false");
+    span.textContent = `${glyph} ${counts[bucket]} ${bucket}`;
+    const fire = (): void => { if (counts[bucket] > 0) toggle(bucket, span); };
+    span.addEventListener("click", fire);
+    span.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(); }
+    });
+    if (counts[bucket] === 0) span.setAttribute("aria-disabled", "true");
+    bar.appendChild(span);
+  }
   sec.appendChild(bar);
+  sec.appendChild(detail);
 
   // .jfc download actions
   const dyn = firingEvents(fires, mappings, rules);
@@ -179,26 +232,156 @@ function renderCoverage(
   }
   if (actions.children.length > 0) sec.appendChild(actions);
 
-  if (uncovered.length > 0) {
-    const gh = document.createElement("h4");
-    gh.className = "gap-title";
-    gh.textContent = `Uncovered sites — candidate JFR events (${uncovered.length})`;
-    sec.appendChild(gh);
-
-    // group uncovered by tag set for a compact worklist
-    const byTagset = new Map<string, SiteJson[]>();
-    for (const s of uncovered) {
-      const k = [...s.tags].sort().join("+");
-      const arr = byTagset.get(k) ?? [];
-      arr.push(s);
-      byTagset.set(k, arr);
-    }
-    const rows = [...byTagset.entries()].sort((a, b) => b[1].length - a[1].length);
-    for (const [tagset, arr] of rows.slice(0, 20)) {
-      sec.appendChild(renderGapGroup(data, tagset, arr, gc));
-    }
-  }
   return sec;
+}
+
+/** jfrevents doc URL for an event name, matching the convention in jfr-mappings.json. */
+function jfrUrl(event: string): string {
+  return "https://sap.github.io/jfrevents/25.html#" + event.replace("jdk.", "").toLowerCase();
+}
+
+const EVENT_PREVIEW = 8;
+
+/**
+ * Covered/partial detail: the bucket's firing sites grouped by the JFR event that covers them. Each
+ * group links to the event's jfrevents doc and lists the log line + GitHub source link per site.
+ * For partials, the covering note and any related events are surfaced under the group head.
+ */
+function renderBucketByEvent(
+  bucket: SiteJson[],
+  state: "covered" | "partial",
+  data: VersionData,
+  mappings: JfrMapping[],
+  rules: CoverageRule[],
+  volumes: Map<string, EventVolume>
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "cov-bucket";
+  const index = indexMappingsByKind(mappings);
+
+  interface Group { event: string; url: string; note?: string; related?: string[]; sites: SiteJson[]; }
+  const groups = new Map<string, Group>();
+  for (const s of bucket) {
+    const cov = classifySite(s, index, rules);
+    const event = cov.jfrEvent ?? "(no specific event)";
+    const url = cov.jfrEventsUrl ?? (cov.jfrEvent ? jfrUrl(cov.jfrEvent) : "");
+    const g = groups.get(event) ?? { event, url, sites: [] };
+    if (cov.note && !g.note) g.note = cov.note;
+    if (cov.relatedEvents && !g.related) g.related = cov.relatedEvents;
+    g.sites.push(s);
+    groups.set(event, g);
+  }
+  const ordered = [...groups.values()].sort((a, b) => b.sites.length - a.sites.length);
+
+  const siteLine = (s: SiteJson): HTMLElement => {
+    const a = document.createElement("a");
+    a.className = "evt-line";
+    a.href = ghUrl(data, data.blocks[s.blockId]);
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = (s.formatString ?? s.file.split("/").pop() ?? s.file).slice(0, 90);
+    a.title = s.file + " :: " + (s.funcSignature ?? "");
+    return a;
+  };
+
+  for (const g of ordered) {
+    const el = document.createElement("div");
+    el.className = "evt-group";
+
+    const head = document.createElement("div");
+    head.className = "evt-head";
+    if (g.url) {
+      const link = document.createElement("a");
+      link.className = "evt-name";
+      link.href = g.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = g.event;
+      head.appendChild(link);
+    } else {
+      const name = document.createElement("span");
+      name.className = "evt-name";
+      name.textContent = g.event;
+      head.appendChild(name);
+    }
+    const count = document.createElement("span");
+    count.className = "evt-count";
+    count.textContent = `${g.sites.length} log line${g.sites.length === 1 ? "" : "s"}`;
+    head.appendChild(count);
+
+    const vol = volumes.get(g.event);
+    if (vol && vol.mbPerHour > 0) {
+      const v = document.createElement("span");
+      v.className = "evt-vol";
+      v.textContent = `~${fmtMbPerHour(vol.mbPerHour)}/h`;
+      v.title = "Estimated log volume these sites emit, extrapolated from the benchmark";
+      head.appendChild(v);
+    }
+    el.appendChild(head);
+
+    if (g.note) {
+      const note = document.createElement("div");
+      note.className = "evt-note";
+      note.textContent = g.note;
+      el.appendChild(note);
+    }
+    if (state === "partial" && g.related && g.related.length > 0) {
+      const rel = document.createElement("div");
+      rel.className = "evt-rel";
+      rel.appendChild(document.createTextNode("also: "));
+      for (const r of g.related) {
+        const c = document.createElement("a");
+        c.className = "chip evt-rel-chip";
+        c.href = jfrUrl(r);
+        c.target = "_blank";
+        c.rel = "noopener";
+        c.textContent = r;
+        rel.appendChild(c);
+      }
+      el.appendChild(rel);
+    }
+
+    for (const s of g.sites.slice(0, EVENT_PREVIEW)) el.appendChild(siteLine(s));
+    if (g.sites.length > EVENT_PREVIEW) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "gap-more";
+      more.textContent = `… ${g.sites.length - EVENT_PREVIEW} more`;
+      more.addEventListener("click", () => {
+        const frag = document.createDocumentFragment();
+        for (const s of g.sites.slice(EVENT_PREVIEW)) frag.appendChild(siteLine(s));
+        el.insertBefore(frag, more);
+        more.remove();
+      });
+      el.appendChild(more);
+    }
+    wrap.appendChild(el);
+  }
+  return wrap;
+}
+
+/** Uncovered detail: the candidate-JFR-event worklist, grouped by tag set (unchanged behaviour). */
+function renderUncovered(data: VersionData, uncovered: SiteJson[], gc: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "cov-bucket";
+
+  const gh = document.createElement("h4");
+  gh.className = "gap-title";
+  gh.textContent = `Uncovered sites — candidate JFR events (${uncovered.length})`;
+  wrap.appendChild(gh);
+
+  const byTagset = new Map<string, SiteJson[]>();
+  for (const s of uncovered) {
+    const k = [...s.tags].sort().join("+");
+    const arr = byTagset.get(k) ?? [];
+    arr.push(s);
+    byTagset.set(k, arr);
+  }
+  const rows = [...byTagset.entries()].sort((a, b) => b[1].length - a[1].length);
+  for (const [tagset, arr] of rows.slice(0, 20)) {
+    wrap.appendChild(renderGapGroup(data, tagset, arr, gc));
+  }
+  return wrap;
 }
 
 const GAP_PREVIEW = 4;

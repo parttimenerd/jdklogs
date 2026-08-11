@@ -14,6 +14,7 @@ import { renderCoverageTab } from "./coverage-view";
 import { LogSearch } from "./log-search";
 import { highlightConfig } from "./highlight-config";
 import { readUrlState, writeUrlState } from "./url-state";
+import { copyToClipboard } from "./clipboard";
 import { PLATFORMS, filterByPlatform, filterByGc } from "./platform";
 
 const DATA_BASE = "./data/";
@@ -206,6 +207,36 @@ function setupTabs(): void {
   });
 }
 
+// --- copy / share buttons --------------------------------------------------
+function setupCopyButtons(): void {
+  const copyBtn = $("#config-copy");
+  copyBtn.addEventListener("click", () => copyToClipboard(state.config, copyBtn));
+
+  const shareBtn = $("#share-link");
+  shareBtn.addEventListener("click", () => {
+    writeUrlState(state); // make sure the hash reflects the current state before copying it
+    copyToClipboard(location.href, shareBtn);
+  });
+}
+
+// --- first-run hint: clickable example selectors ---------------------------
+function setupConfigHint(): void {
+  const hint = $("#config-hint");
+  hint.appendChild(document.createTextNode("Try: "));
+  const examples = ["gc*=info", "gc+heap=debug", "safepoint=info"];
+  examples.forEach((ex, i) => {
+    if (i > 0) hint.appendChild(document.createTextNode(" · "));
+    const a = document.createElement("a");
+    a.className = "hint-ex";
+    a.textContent = ex;
+    a.addEventListener("click", () => {
+      setConfig(ex);
+      ($("#config") as HTMLInputElement).focus();
+    });
+    hint.appendChild(a);
+  });
+}
+
 async function main(): Promise<void> {
   // restore shareable state from the URL hash (validate against known versions/GCs)
   const url = readUrlState();
@@ -292,6 +323,8 @@ async function main(): Promise<void> {
 
   setupAutocomplete();
   setupTabs();
+  setupCopyButtons();
+  setupConfigHint();
 
   const input = $("#config") as HTMLInputElement;
   input.value = state.config;

@@ -21,6 +21,11 @@ async function openCoverage(page: Page) {
   await page.getByRole("button", { name: /^JFR coverage/ }).click();
 }
 
+// The covered/partial/uncovered counts are clickable toggles; click one to reveal its detail panel.
+async function openBucket(page: Page, bucket: "covered" | "partial" | "uncovered") {
+  await page.locator(`.cov-summary span[data-bucket="${bucket}"]`).click();
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".results-header")).toBeVisible();
@@ -128,6 +133,7 @@ test("JFR coverage tab 'By JFR event' lists events with the log lines they repla
 test("uncovered gap group expands its site list and reveals source snippets", async ({ page }) => {
   await setConfig(page, "gc*=info");
   await openCoverage(page);
+  await openBucket(page, "uncovered");
   // The first uncovered group is the largest tag set; it has an overflow "… N more" button.
   const group = page.locator(".gap-group").first();
   await expect(group).toBeVisible();
@@ -141,6 +147,34 @@ test("uncovered gap group expands its site list and reveals source snippets", as
   await group.locator(".gap-src-btn").click();
   await expect(group.locator(".gap-src .snippet").first()).toBeVisible();
   await expect(group.locator(".gap-src-btn")).toHaveText("Hide source");
+});
+
+test("covered/partial counts expand to sites grouped by covering JFR event", async ({ page }) => {
+  await setConfig(page, "gc*=debug");
+  await openCoverage(page);
+  const detail = page.locator(".cov-detail");
+  // Detail panel is collapsed until a count is clicked.
+  await expect(detail).toBeHidden();
+
+  // Click "covered": sites grouped under event names that link to the jfrevents doc.
+  await openBucket(page, "covered");
+  await expect(detail).toBeVisible();
+  const coveredEvent = detail.locator(".cov-bucket .evt-group a.evt-name").first();
+  await expect(coveredEvent).toBeVisible();
+  await expect(coveredEvent).toHaveAttribute("href", /sap\.github\.io\/jfrevents\/.+#/);
+  // Each group lists the log lines it covers, linking to the GitHub source.
+  await expect(detail.locator("a.evt-line").first()).toHaveAttribute("href", /github\.com\/openjdk\/jdk\/blob\//);
+
+  // Switching to "partial" swaps the panel content (partials can carry a coverage note).
+  await openBucket(page, "partial");
+  await expect(detail).toBeVisible();
+  await expect(detail.locator(".cov-bucket .evt-group a.evt-name").first()).toBeVisible();
+  await expect(page.locator('.cov-summary span[data-bucket="partial"]')).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('.cov-summary span[data-bucket="covered"]')).toHaveAttribute("aria-expanded", "false");
+
+  // Clicking the open bucket again collapses the panel.
+  await openBucket(page, "partial");
+  await expect(detail).toBeHidden();
 });
 
 test("JFR coverage tab shows the experimental banner", async ({ page }) => {
@@ -266,4 +300,51 @@ test("Collapse all button folds and unfolds every file group", async ({ page }) 
   await btn.click();
   await expect(btn).toHaveText("Collapse all");
   expect(await openCount()).toBe(await total());
+});
+
+test("Copy button gives 'Copied!' feedback without changing the config", async ({ page }) => {
+  await setConfig(page, "gc*=info");
+  const btn = page.locator("#config-copy");
+  await expect(btn).toHaveText("Copy");
+  await btn.click();
+  await expect(btn).toHaveText("Copied!");
+  // the config text itself is untouched by copying
+  await expect(page.locator("#config")).toHaveValue("gc*=info");
+  // label reverts after the timeout
+  await expect(btn).toHaveText("Copy");
+});
+
+test("Copy link button gives 'Copied!' feedback", async ({ page }) => {
+  const btn = page.locator("#share-link");
+  await expect(btn).toHaveText("Copy link");
+  await btn.click();
+  await expect(btn).toHaveText("Copied!");
+  await expect(btn).toHaveText("Copy link");
+});
+
+test("clicking a first-run hint example sets the config and updates the results", async ({ page }) => {
+  const ex = page.locator("#config-hint .hint-ex", { hasText: "gc+heap=debug" });
+  await expect(ex).toBeVisible();
+  await ex.click();
+  await expect(page.locator("#config")).toHaveValue("gc+heap=debug");
+  await expect(page.locator(".results-header")).toContainText("firing site(s)");
+});
+
+test("the Sites filter narrows the file groups by path and restores on clear", async ({ page }) => {
+  await setConfig(page, "gc*=trace");
+  const groupCount = () => page.locator(".file-group").count();
+  const full = await groupCount();
+  expect(full).toBeGreaterThan(1);
+
+  const filter = page.locator(".sites-filter");
+  await filter.fill("heap");
+  await page.waitForTimeout(150);
+  const narrowed = await groupCount();
+  expect(narrowed).toBeGreaterThan(0);
+  expect(narrowed).toBeLessThan(full);
+  await expect(page.locator(".results-header")).toContainText("match");
+
+  await filter.fill("");
+  await page.waitForTimeout(150);
+  expect(await groupCount()).toBe(full);
 });

@@ -6,6 +6,7 @@ import "prismjs/components/prism-clike";
 import "prismjs/components/prism-c";
 import "prismjs/components/prism-cpp";
 import { Block, ghUrl, SiteJson, VersionData, VolumeStats } from "./types";
+import { copyToClipboard } from "./clipboard";
 
 /**
  * Tab 1: firing sites grouped by file. Each block is one context snippet (sites in the same block
@@ -37,8 +38,15 @@ export function renderFiringSites(
   const header = document.createElement("div");
   header.className = "results-header";
   const summary = document.createElement("span");
-  summary.textContent = fires.length + " firing site(s)";
   header.appendChild(summary);
+
+  // Filter box: narrow the file list by path, log message, or tag/level (mirrors the Sample log
+  // tab's search). Re-renders the list in place on input.
+  const filter = document.createElement("input");
+  filter.type = "search";
+  filter.className = "sites-filter";
+  filter.placeholder = "Filter by path, message, or tag…";
+  header.appendChild(filter);
 
   // Collapse/expand-all toggle for the per-file sections (broad configs list dozens of files).
   const toggleAll = document.createElement("button");
@@ -63,7 +71,8 @@ export function renderFiringSites(
 
   // Flatten to (file, representative-site, block-sites) render units, deduped by blockId, so we can
   // cap on blocks rather than files (a single file may hold dozens of distinct context blocks).
-  const units: { file: string; rep: SiteJson; blockSites: SiteJson[] }[] = [];
+  interface Unit { file: string; rep: SiteJson; blockSites: SiteJson[]; }
+  const units: Unit[] = [];
   for (const [file, sites] of [...byFile.entries()].sort()) {
     const seen = new Set<string>();
     for (const s of sites) {
@@ -73,56 +82,105 @@ export function renderFiringSites(
     }
   }
 
-  const renderUpTo = (limit: number): void => {
-    let curFile = "";
-    let fileEl: HTMLElement | null = null;
-    for (const u of units.slice(0, limit)) {
-      if (u.file !== curFile) {
-        curFile = u.file;
-        fileEl = document.createElement("details");
-        fileEl.className = "file-group";
-        (fileEl as HTMLDetailsElement).open = true;
-        const h = document.createElement("summary");
-        h.className = "file-name";
-        const path = document.createElement("code");
-        path.className = "file-path";
-        path.textContent = u.file;
-        // The <summary> toggles on click, which would clobber text selection of the path. Let the
-        // path be selectable/copyable by swallowing clicks on it (the chevron still toggles).
-        path.addEventListener("click", (e) => e.preventDefault());
-        h.appendChild(path);
-        const n = byFile.get(u.file)!.length;
-        const count = document.createElement("span");
-        count.className = "file-count";
-        count.textContent = `${n} log statement${n === 1 ? "" : "s"}`;
-        h.appendChild(count);
-        fileEl.appendChild(h);
-        root.appendChild(fileEl);
+  // A unit matches the filter if its file path, or ANY of its block-sites' message / level / tags,
+  // contain the query (case-insensitive) — so a tag or message hit keeps the whole context block.
+  const matchUnit = (u: Unit, q: string): boolean => {
+    if (u.file.toLowerCase().includes(q)) return true;
+    return u.blockSites.some(
+      (s) =>
+        (s.formatString ?? "").toLowerCase().includes(q) ||
+        s.level.toLowerCase().includes(q) ||
+        s.tags.join("+").toLowerCase().includes(q)
+    );
+  };
+
+  // Render a list of units into per-file <details> groups, capped at BLOCK_CAP with a "render all"
+  // affordance. Clears any previously-rendered groups/buttons first so re-filtering is idempotent.
+  const renderList = (list: Unit[]): void => {
+    root.querySelectorAll(".file-group, .render-all-btn").forEach((el) => el.remove());
+
+    const fileCountIn = (file: string) => list.filter((u) => u.file === file).length;
+
+    const renderUpTo = (limit: number): void => {
+      let curFile = "";
+      let fileEl: HTMLElement | null = null;
+      for (const u of list.slice(0, limit)) {
+        if (u.file !== curFile) {
+          curFile = u.file;
+          fileEl = document.createElement("details");
+          fileEl.className = "file-group";
+          (fileEl as HTMLDetailsElement).open = true;
+          const h = document.createElement("summary");
+          h.className = "file-name";
+          const path = document.createElement("code");
+          path.className = "file-path";
+          path.textContent = u.file;
+          // The <summary> toggles on click, which would clobber text selection of the path. Let the
+          // path be selectable/copyable by swallowing clicks on it (the chevron still toggles).
+          path.addEventListener("click", (e) => e.preventDefault());
+          h.appendChild(path);
+          const n = fileCountIn(u.file);
+          const count = document.createElement("span");
+          count.className = "file-count";
+          count.textContent = `${n} log statement${n === 1 ? "" : "s"}`;
+          h.appendChild(count);
+          fileEl.appendChild(h);
+          root.appendChild(fileEl);
+        }
+        fileEl!.appendChild(renderBlock(data, data.blocks[u.rep.blockId], u.rep, u.blockSites, gc));
       }
-      fileEl!.appendChild(renderBlock(data, data.blocks[u.rep.blockId], u.rep, u.blockSites, gc));
+    };
+
+    const noun = "context block";
+    if (list.length === 0) {
+      const d = document.createElement("div");
+      d.className = "file-group note";
+      d.textContent = "No firing sites match this filter.";
+      root.appendChild(d);
+      return;
+    }
+    if (list.length <= BLOCK_CAP) {
+      renderUpTo(list.length);
+      return;
+    }
+    // Capped: render the first BLOCK_CAP blocks, offer to render the rest on demand.
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "render-all-btn";
+    more.textContent = `Render all ${list.length} blocks (may be slow)`;
+    more.addEventListener("click", () => {
+      more.remove();
+      root.querySelectorAll(".file-group").forEach((el) => el.remove());
+      renderUpTo(list.length);
+      updateSummary(list.length, list.length, noun);
+    });
+    header.appendChild(more);
+    renderUpTo(BLOCK_CAP);
+  };
+
+  const updateSummary = (shown: number, total: number, noun: string): void => {
+    if (shown < total) {
+      summary.textContent = `${fires.length} firing site(s) — showing first ${shown} of ${total} ${noun}s`;
+    } else {
+      summary.textContent = `${fires.length} firing site(s)`;
     }
   };
 
-  if (units.length <= BLOCK_CAP) {
-    renderUpTo(units.length);
-    return;
-  }
+  // Full render, then re-filter on each keystroke against the precomputed units.
+  const apply = (query: string): void => {
+    const q = query.trim().toLowerCase();
+    const list = q ? units.filter((u) => matchUnit(u, q)) : units;
+    if (q) {
+      summary.textContent = `${list.length} of ${units.length} context blocks match "${query}"`;
+    } else {
+      updateSummary(Math.min(units.length, BLOCK_CAP), units.length, "context block");
+    }
+    renderList(list);
+    toggleAll.textContent = "Collapse all";
+  };
 
-  // Capped: render the first BLOCK_CAP blocks, offer to render the rest on demand.
-  summary.textContent = `${fires.length} firing site(s) — showing first ${BLOCK_CAP} of ${units.length} context blocks`;
-  const more = document.createElement("button");
-  more.type = "button";
-  more.className = "render-all-btn";
-  more.textContent = `Render all ${units.length} blocks (may be slow)`;
-  more.addEventListener("click", () => {
-    more.remove();
-    // clear the capped render and re-render everything
-    root.querySelectorAll(".file-group").forEach((el) => el.remove());
-    renderUpTo(units.length);
-    summary.textContent = fires.length + " firing site(s)";
-  });
-  header.appendChild(more);
-  renderUpTo(BLOCK_CAP);
+  filter.addEventListener("input", () => apply(filter.value));
+  apply("");
 }
 
 function renderBlock(
@@ -150,6 +208,14 @@ function renderBlock(
   link.rel = "noopener";
   link.textContent = "L" + block.startLine + "-" + block.endLine + " on GitHub";
   meta.appendChild(link);
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "copy-src-btn";
+  copyBtn.textContent = "Copy source";
+  copyBtn.title = "Copy this snippet's source";
+  copyBtn.addEventListener("click", () => copyToClipboard(block.snippet, copyBtn));
+  meta.appendChild(copyBtn);
 
   const chips = document.createElement("span");
   chips.className = "chips";
