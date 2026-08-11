@@ -27,6 +27,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Restore the generated site data (head.json + head.*.log + tags.json) that the
+      # monthly regen-data.yml wrote to the cache. It is NOT committed to git — this is the
+      # only place a build gets it. restore-keys picks the newest site-data-v1-* entry.
+      - name: Restore generated data from cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/head.json
+            data/head.G1.log
+            data/head.ZGC.log
+            data/head.Parallel.log
+            data/tags.json
+          key: site-data-v1-restore-placeholder
+          restore-keys: |
+            site-data-v1-
+
+      # Fail loudly rather than deploy an empty site if the data cache is missing (e.g. never
+      # populated yet, or evicted). Run `regen-data.yml` (workflow_dispatch) to repopulate it.
+      - name: Verify generated data is present
+        working-directory: .
+        run: |
+          missing=0
+          for f in data/head.json data/tags.json; do
+            if [ ! -s "$f" ]; then echo "::error::missing generated data: $f"; missing=1; fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo "::error::Generated data cache is empty. Run the 'Regenerate data' workflow (workflow_dispatch) to populate the site-data-v1-* cache, then re-run this build."
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -34,6 +64,18 @@ jobs:
           cache-dependency-path: site/package-lock.json
 
       - run: npm ci
+
+      # Cache Vite's dependency pre-bundling / transform cache across runs so a push that
+      # only changes data/ doesn't repay the cold-start cost. npm deps are already cached
+      # by setup-node above.
+      - name: Cache Vite build artifacts
+        uses: actions/cache@v4
+        with:
+          path: site/node_modules/.vite
+          key: vite-${{ runner.os }}-${{ hashFiles('site/package-lock.json') }}-${{ hashFiles('site/src/**', 'site/vite.config.ts', 'site/tsconfig.json') }}
+          restore-keys: |
+            vite-${{ runner.os }}-${{ hashFiles('site/package-lock.json') }}-
+            vite-${{ runner.os }}-
 
       # Vite resolves the site/public/data symlink at build time, copying the JSON + sample
       # logs into dist/data/. No separate staging step needed.

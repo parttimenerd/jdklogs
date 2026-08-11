@@ -17,6 +17,13 @@ site/.playwright-mcp/
 *.gclog
 *.gclog.gz
 
+# Generated site data — produced monthly by regen-data.yml and shuttled between the
+# regen and build workflows via actions/cache, NOT committed. Hand-curated JSON
+# (jfr-mappings/coverage/proposed-events) stays tracked.
+data/head.json
+data/head.*.log
+data/tags.json
+
 # Transient capture/harness scratch dirs
 harness-*/
 capture/

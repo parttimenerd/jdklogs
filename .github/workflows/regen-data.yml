@@ -15,13 +15,17 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   regen:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Compute cache month
+        id: cachemonth
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
 
       # Kotlin 2.0.21 crashes parsing JDK 25+ version strings, so the generator must be
       # BUILT and RUN under JDK 21 (see generator/pom.xml). This is unrelated to which
@@ -62,14 +66,18 @@ jobs:
             bash generator/bin/capture-samples.sh capture 300 scala-kmeans akka-uct
           java -jar "$JAR" samples data/head.json capture
 
-      - name: Commit regenerated data
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/
-          if git diff --cached --quiet; then
-            echo "No data changes."
-          else
-            git commit -m "chore(data): monthly regeneration (openjdk/jdk @ ${HEAD_SHA:0:12})"
-            git push
-          fi
+      # Publish the generated data (head.json + head.*.log + tags.json) to a versioned,
+      # month-suffixed cache. build.yml restores the newest matching entry via restore-keys,
+      # so it never regenerates on a plain push — the expensive JDK clone + benchmark runs
+      # only here, once a month. The month suffix makes each regen write a fresh, immutable
+      # entry (actions/cache never overwrites an existing exact key).
+      - name: Save generated data to cache
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/head.json
+            data/head.G1.log
+            data/head.ZGC.log
+            data/head.Parallel.log
+            data/tags.json
+          key: site-data-v1-${{ steps.cachemonth.outputs.month }}-${{ github.run_id }}
