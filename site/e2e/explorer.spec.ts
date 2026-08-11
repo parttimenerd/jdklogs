@@ -471,3 +471,16 @@ test("block 'Link' button copies a link, and navigating to #b=<id> scrolls the b
     .toBe(true);
 });
 
+test("footer shows a data-provenance line linking to the source commit", async ({ page }) => {
+  const prov = page.locator("#data-provenance");
+  await expect(prov).toContainText("Data generated");
+  await expect(prov).toContainText("openjdk/jdk");
+  const link = prov.locator("a");
+  await expect(link).toHaveAttribute("href", /\/commit\//);
+});
+
+test("version selector lists the versions detected at startup (head is always present)", async ({ page }) => {
+  const options = page.locator("#version option");
+  await expect(options.filter({ hasText: /^head$/ })).toHaveCount(1);
+});
+

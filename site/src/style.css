@@ -245,5 +245,9 @@ a.evt-line:hover { text-decoration: underline; color: var(--accent); }
 
 .note { color: var(--muted); padding: 12px; font-style: italic; }
 .site-footer { padding: 16px 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.data-provenance { margin: 0 0 8px; }
+.data-provenance:empty { display: none; }
+.data-provenance a { color: var(--accent); text-decoration: none; }
+.data-provenance a:hover { text-decoration: underline; }
 
 @media (max-width: 900px) { .config-wrap { min-width: 100%; } .snippet { font-size: 12px; } }

@@ -27,9 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Restore the generated site data (head.json + head.*.log + tags.json) that the
-      # monthly regen-data.yml wrote to the cache. It is NOT committed to git — this is the
-      # only place a build gets it. restore-keys picks the newest site-data-v1-* entry.
+      # Restore the generated site data (head/21/25 .json + *.log + tags.json) that the monthly
+      # regen-data.yml wrote to the cache. It is NOT committed to git — this is the only place a
+      # build gets it. restore-keys picks the newest site-data-v1-* entry. 21/25 files are
+      # best-effort: absent ones simply don't restore, and the frontend auto-detects what's present.
       - name: Restore generated data from cache
         uses: actions/cache/restore@v6
         with:
@@ -38,13 +39,22 @@ jobs:
             data/head.G1.log
             data/head.ZGC.log
             data/head.Parallel.log
+            data/21.json
+            data/21.G1.log
+            data/21.ZGC.log
+            data/21.Parallel.log
+            data/25.json
+            data/25.G1.log
+            data/25.ZGC.log
+            data/25.Parallel.log
             data/tags.json
           key: site-data-v1-restore-placeholder
           restore-keys: |
             site-data-v1-
 
       # Fail loudly rather than deploy an empty site if the data cache is missing (e.g. never
-      # populated yet, or evicted). Run `regen-data.yml` (workflow_dispatch) to repopulate it.
+      # populated yet, or evicted). Only head + tags are required — 21/25 are best-effort and the
+      # frontend lights them up automatically once present. Run `regen-data.yml` to repopulate.
       - name: Verify generated data is present
         working-directory: .
         run: |

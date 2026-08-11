@@ -18,8 +18,12 @@ import { copyToClipboard } from "./clipboard";
 import { PLATFORMS, filterByPlatform, filterByGc } from "./platform";
 
 const DATA_BASE = "./data/";
-// Versions we ship (head = openjdk/jdk master). Add release branches here as data is generated.
-const VERSIONS = ["head"];
+// Candidate versions we may ship (head = openjdk/jdk master; LTS lines by number). Which ones are
+// actually offered is decided at startup by probing for each `<version>.json` — so a version lights
+// up automatically once CI has generated + cached its data, with no code change here.
+const VERSION_CANDIDATES = ["head", "21", "25"];
+// Effective, present-at-runtime versions; filled by detectVersions() before the selector is built.
+let VERSIONS: string[] = ["head"];
 const GCS = ["G1", "ZGC", "Parallel"];
 const PLATFORM_VALUES = PLATFORMS.map((p) => p.value);
 
@@ -56,6 +60,41 @@ async function loadData(version: string): Promise<void> {
   state.tags = tags;
   state.mappings = mappings as JfrMapping[];
   state.coverage = (coverage as CoverageData).rules ?? [];
+}
+
+/** Probe each candidate `<version>.json` in parallel and keep only those that respond OK, in
+ *  candidate order (head first). This is what makes 21/25 light up automatically once CI has
+ *  generated + cached their data — no code change here. Falls back to `["head"]` if the probe
+ *  finds nothing (head is always cached, so that shouldn't happen). 404s for absent versions are
+ *  expected and swallowed. */
+async function detectVersions(): Promise<string[]> {
+  const results = await Promise.all(
+    VERSION_CANDIDATES.map((v) =>
+      fetch(`${DATA_BASE}${v}.json`, { method: "HEAD" })
+        .then((r) => r.ok)
+        .catch(() => false)
+    )
+  );
+  const present = VERSION_CANDIDATES.filter((_, i) => results[i]);
+  return present.length > 0 ? present : ["head"];
+}
+
+/** Footer line: which OpenJDK commit the data was scanned from, and when. Sourced from the loaded
+ *  VersionData; omitted entirely if the fields are absent (older data). */
+function renderProvenance(): void {
+  const el = document.querySelector<HTMLElement>("#data-provenance");
+  if (!el || !state.data) return;
+  const { generatedAt, commitSha, repo } = state.data;
+  if (!generatedAt || !commitSha || !repo) { el.textContent = ""; return; }
+  const date = new Date(generatedAt).toISOString().slice(0, 10); // UTC, locale-free
+  const short = commitSha.slice(0, 7);
+  el.textContent = `Data generated ${date} from ${repo} @ `;
+  const a = document.createElement("a");
+  a.href = `https://github.com/${repo}/commit/${commitSha}`;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.textContent = short;
+  el.appendChild(a);
 }
 
 let wizard: Wizard | null = null;
@@ -283,7 +322,11 @@ function setupConfigHint(): void {
 }
 
 async function main(): Promise<void> {
-  // restore shareable state from the URL hash (validate against known versions/GCs)
+  // Probe which versions CI has actually generated, before touching the selector or the URL state.
+  VERSIONS = await detectVersions();
+  state.version = VERSIONS[0];
+
+  // restore shareable state from the URL hash (validate against detected versions/known GCs)
   const url = readUrlState();
   if (url.version && VERSIONS.includes(url.version)) state.version = url.version;
   if (url.gc && GCS.includes(url.gc)) state.gc = url.gc;
@@ -303,6 +346,7 @@ async function main(): Promise<void> {
     state.version = vsel.value;
     await loadData(state.version);
     writeUrlState(state);
+    renderProvenance();
     updateWizardAvailability();
     rerender();
   });
@@ -336,6 +380,7 @@ async function main(): Promise<void> {
   });
 
   await loadData(state.version);
+  renderProvenance();
 
   // Group each tag under its "main tag" (primary subsystem) for the wizard. A tag that appears as
   // the first tag of some site is its own primary; a modifier tag (e.g. `ergo`, never first) is

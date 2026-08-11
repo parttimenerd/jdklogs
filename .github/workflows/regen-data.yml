@@ -40,37 +40,69 @@ jobs:
         working-directory: generator
         run: mvn -B -ntp package -DskipTests
 
-      - name: Clone openjdk/jdk (master → head), shallow
+      # Clone every scanned line, shallow. head = openjdk/jdk master; the LTS lines from their
+      # update repos. Each SHA is captured for the footer provenance link. tags.json is generated
+      # once from head (the newest superset); per-version tag divergence is a rare, accepted risk.
+      - name: Clone JDK sources (head + 21 + 25), shallow
         run: |
-          git clone --depth 1 https://github.com/openjdk/jdk.git jdk-src
-          echo "HEAD_SHA=$(git -C jdk-src rev-parse HEAD)" >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/openjdk/jdk.git    jdk-src-head
+          git clone --depth 1 https://github.com/openjdk/jdk21u.git jdk-src-21
+          git clone --depth 1 https://github.com/openjdk/jdk25.git  jdk-src-25
+          echo "HEAD_SHA=$(git -C jdk-src-head rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "V21_SHA=$(git -C jdk-src-21 rev-parse HEAD)"    >> "$GITHUB_ENV"
+          echo "V25_SHA=$(git -C jdk-src-25 rev-parse HEAD)"    >> "$GITHUB_ENV"
 
-      - name: Generate site data for head
+      - name: Generate site data (head + 21 + 25)
         run: |
           JAR=generator/target/jdklogs-generator-0.1.0-SNAPSHOT.jar
-          java -jar "$JAR" generate jdk-src head openjdk/jdk "$HEAD_SHA" data
-          java -jar "$JAR" tags jdk-src data
+          java -jar "$JAR" generate jdk-src-head head openjdk/jdk    "$HEAD_SHA" data
+          java -jar "$JAR" generate jdk-src-21   21   openjdk/jdk21u "$V21_SHA"  data
+          java -jar "$JAR" generate jdk-src-25   25   openjdk/jdk25  "$V25_SHA"  data
+          java -jar "$JAR" tags jdk-src-head data
 
-      # Best-effort sample capture. Only on manual dispatch with the flag set: it needs a
-      # runnable JDK + renaissance and is slow. Without it, sites still ship with empty
-      # samples and the UI degrades gracefully. capture-samples.sh runs every available
-      # collector (G1/ZGC/Parallel) in parallel, so wall time is ~5 min + JVM warmup, not 3×.
+      # Runnable JDKs for the sample capture (source scan above is independent of these). head has no
+      # fixed build, so we run its benchmark under the newest GA JDK as a proxy — only affects which
+      # log *lines* get emitted, not the scanned source.
+      - name: Set up JDK 21 for capture
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_samples }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Set up JDK 25 for capture
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_samples }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+
+      # Best-effort sample capture. Only on manual dispatch with the flag set: it needs a runnable
+      # JDK + renaissance and is slow. Without it, sites still ship with empty samples and the UI
+      # degrades gracefully. capture-samples.sh runs every available collector (G1/ZGC/Parallel) in
+      # parallel per version, so wall time is ~5 min + warmup per version, ~15 min for three.
       - name: Capture samples (optional)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_samples }}
         continue-on-error: true
-        timeout-minutes: 20
+        timeout-minutes: 45
         run: |
           JAR=generator/target/jdklogs-generator-0.1.0-SNAPSHOT.jar
-          mkdir -p capture
-          JAVA="$JAVA_HOME/bin/java" XLOG="all=trace" \
-            bash generator/bin/capture-samples.sh capture 300 scala-kmeans akka-uct
-          java -jar "$JAR" samples data/head.json capture
+          capture_one() {
+            local version="$1" java_home="$2"
+            mkdir -p "capture/$version"
+            JAVA="$java_home/bin/java" XLOG="all=trace" \
+              bash generator/bin/capture-samples.sh "capture/$version" 300 scala-kmeans akka-uct
+            java -jar "$JAR" samples "data/$version.json" "capture/$version"
+          }
+          # head runs under the newest GA JDK (25) as a proxy; 21/25 under their own builds.
+          capture_one head "$JAVA_HOME_25_X64"
+          capture_one 21   "$JAVA_HOME_21_X64"
+          capture_one 25   "$JAVA_HOME_25_X64"
 
-      # Publish the generated data (head.json + head.*.log + tags.json) to a versioned,
-      # month-suffixed cache. build.yml restores the newest matching entry via restore-keys,
-      # so it never regenerates on a plain push — the expensive JDK clone + benchmark runs
-      # only here, once a month. The month suffix makes each regen write a fresh, immutable
-      # entry (actions/cache never overwrites an existing exact key).
+      # Publish the generated data to a versioned, month-suffixed cache. build.yml restores the
+      # newest matching entry via restore-keys, so it never regenerates on a plain push — the
+      # expensive JDK clone + benchmark runs only here, once a month. The month suffix makes each
+      # regen write a fresh, immutable entry (actions/cache never overwrites an existing exact key).
+      # 21/25 files are best-effort; a build never fails if they are absent (see build.yml gate).
       - name: Save generated data to cache
         uses: actions/cache/save@v6
         with:
@@ -79,5 +111,13 @@ jobs:
             data/head.G1.log
             data/head.ZGC.log
             data/head.Parallel.log
+            data/21.json
+            data/21.G1.log
+            data/21.ZGC.log
+            data/21.Parallel.log
+            data/25.json
+            data/25.G1.log
+            data/25.ZGC.log
+            data/25.Parallel.log
             data/tags.json
           key: site-data-v1-${{ steps.cachemonth.outputs.month }}-${{ github.run_id }}
