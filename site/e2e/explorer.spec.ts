@@ -348,3 +348,44 @@ test("the Sites filter narrows the file groups by path and restores on clear", a
   await page.waitForTimeout(150);
   expect(await groupCount()).toBe(full);
 });
+
+test("the wizard greys out and sorts down tags with no sites for the current GC", async ({ page }) => {
+  await page.locator("#wizard-toggle").click();
+  await expect(page.locator("#wizard")).toHaveClass(/open/);
+
+  const deadCount = () => page.locator(".wiz-row.wiz-unavailable").count();
+  // Some tags have no sites under the default G1 selection (they live in other collectors' trees).
+  const g1Dead = await deadCount();
+  expect(g1Dead).toBeGreaterThan(0);
+
+  // Switching GC changes which tags are dead (the set is derived from the visible sites).
+  await page.locator("#gc").selectOption("ZGC");
+  await page.waitForTimeout(150);
+  const zgcDead = await deadCount();
+  expect(zgcDead).toBeGreaterThan(0);
+  expect(zgcDead).not.toEqual(g1Dead);
+
+  // Within every group, no live row appears after a dead row (dead tags sink to the bottom).
+  const violations = await page.evaluate(() => {
+    let bad = 0;
+    for (const g of document.querySelectorAll("details.wiz-group")) {
+      let seenDead = false;
+      for (const r of g.querySelectorAll(".wiz-row")) {
+        if (r.classList.contains("wiz-unavailable")) seenDead = true;
+        else if (seenDead) bad++;
+      }
+    }
+    return bad;
+  });
+  expect(violations).toBe(0);
+
+  // All-dead groups carry the dead marker and no live group follows a dead one.
+  const groupsLiveAfterDead = await page.evaluate(() => {
+    const states = [...document.querySelectorAll("details.wiz-group")].map((g) =>
+      g.classList.contains("wiz-group-dead")
+    );
+    const firstDead = states.indexOf(true);
+    return firstDead >= 0 && states.slice(firstDead).some((s) => s === false);
+  });
+  expect(groupsLiveAfterDead).toBe(false);
+});

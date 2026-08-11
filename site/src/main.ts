@@ -132,6 +132,19 @@ function rerender(): void {
   renderPanel(activePanelId());
 }
 
+/**
+ * Tell the wizard which tags can actually fire under the current gc/platform selection, so it can
+ * grey out and sort-down the tags whose only log sites live in a hidden GC/OS tree. Independent of
+ * the -Xlog config (it reflects the data set, not the selector), so this is driven by gc/platform.
+ */
+function updateWizardAvailability(): void {
+  if (!wizard || !state.data) return;
+  const visible = filterByGc(filterByPlatform(state.data.sites, state.platform), state.gc);
+  const available = new Set<string>();
+  for (const s of visible) for (const t of s.tags) available.add(t);
+  wizard.setAvailableTags(available);
+}
+
 function setConfig(text: string, fromWizard = false): void {
   state.config = text;
   const input = $("#config") as HTMLInputElement;
@@ -255,6 +268,7 @@ async function main(): Promise<void> {
     state.version = vsel.value;
     await loadData(state.version);
     writeUrlState(state);
+    updateWizardAvailability();
     rerender();
   });
 
@@ -267,6 +281,7 @@ async function main(): Promise<void> {
   gsel.addEventListener("change", () => {
     state.gc = gsel.value;
     writeUrlState(state);
+    updateWizardAvailability();
     rerender();
     if ($("#tab-log").classList.contains("active") && logSearch && state.data)
       logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc]);
@@ -281,6 +296,7 @@ async function main(): Promise<void> {
   psel.addEventListener("change", () => {
     state.platform = psel.value;
     writeUrlState(state);
+    updateWizardAvailability();
     rerender();
   });
 
@@ -315,6 +331,7 @@ async function main(): Promise<void> {
 
   wizard = new Wizard($("#wizard"), state.tags!.tags, primaryOf, (cfg) => setConfig(cfg, true));
   logSearch = new LogSearch($("#tab-log"), DATA_BASE);
+  updateWizardAvailability();
 
   $("#wizard-toggle").addEventListener("click", () => {
     $("#wizard").classList.toggle("open");

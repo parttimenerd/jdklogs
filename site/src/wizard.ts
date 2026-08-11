@@ -20,6 +20,10 @@ export class Wizard {
   private rows = new Map<string, WizardRow>();
   // Which <details> groups the user has expanded (persists across re-renders within a session).
   private open = new Set<string>();
+  // Tags that have at least one log site for the current version/gc/platform. A tag outside this
+  // set can never fire under the current selection, so we grey it out and sort it below the live
+  // tags in its group. `null` means "not yet computed" — treat every tag as available.
+  private available: Set<string> | null = null;
   constructor(
     private readonly root: HTMLElement,
     private readonly tags: TagInfo[],
@@ -27,6 +31,20 @@ export class Wizard {
     private readonly onChange: (config: string) => void
   ) {
     this.render();
+  }
+
+  /**
+   * Restrict which tags are shown as "live" for the current version/gc/platform combo. Tags not in
+   * `available` are greyed out and sorted after the live ones in their group; a group with no live
+   * tags sorts to the bottom of the list. Call on init and whenever the gc/platform selection changes.
+   */
+  setAvailableTags(available: Set<string>): void {
+    this.available = available;
+    this.render();
+  }
+
+  private isAvailable(tag: string): boolean {
+    return this.available === null || this.available.has(tag);
   }
 
   /** Parse a config string and reflect it into the toggles (single-tag wildcard selectors only). */
@@ -86,7 +104,15 @@ export class Wizard {
     // While filtering, auto-expand every matching group so results are visible without clicking.
     const forceOpen = filter.length > 0;
 
-    for (const primary of [...groups.keys()].sort()) {
+    // A group with at least one live tag (for the current gc/platform) sorts above the fully-dead
+    // groups; within each availability class, sort alphabetically by primary tag.
+    const groupHasLive = (primary: string) => groups.get(primary)!.some((t) => this.isAvailable(t.name));
+    const order = [...groups.keys()].sort((a, b) => {
+      const la = groupHasLive(a), lb = groupHasLive(b);
+      if (la !== lb) return la ? -1 : 1;
+      return a.localeCompare(b);
+    });
+    for (const primary of order) {
       this.root.appendChild(this.group(primary, groups.get(primary)!, forceOpen));
     }
   }
@@ -95,6 +121,8 @@ export class Wizard {
   private group(primary: string, tags: TagInfo[], forceOpen: boolean): HTMLElement {
     const details = document.createElement("details");
     details.className = "wiz-group";
+    const live = tags.filter((t) => this.isAvailable(t.name)).length;
+    if (live === 0) details.classList.add("wiz-group-dead");
     const enabled = tags.filter((t) => this.rows.has(t.name)).length;
     details.open = forceOpen || this.open.has(primary) || enabled > 0;
     details.addEventListener("toggle", () => {
@@ -107,8 +135,10 @@ export class Wizard {
     summary.textContent = `${primary} (${tags.length}` + (enabled ? `, ${enabled} on` : "") + `)`;
     details.appendChild(summary);
 
+    // Live tags first, then dead ones; stable within each class so the source order is preserved.
+    const sorted = [...tags].sort((a, b) => Number(this.isAvailable(b.name)) - Number(this.isAvailable(a.name)));
     const list = el("div", "wiz-list");
-    for (const t of tags) list.appendChild(this.row(t));
+    for (const t of sorted) list.appendChild(this.row(t));
     details.appendChild(list);
     return details;
   }
@@ -116,7 +146,9 @@ export class Wizard {
   /** Build one tag row (checkbox + label + level select), wired to the two-way binding. */
   private row(t: TagInfo): HTMLElement {
     const row = this.rows.get(t.name);
-    const item = el("div", "wiz-row" + (row ? " on" : ""));
+    const dead = !this.isAvailable(t.name);
+    const item = el("div", "wiz-row" + (row ? " on" : "") + (dead ? " wiz-unavailable" : ""));
+    if (dead) item.title = "No log sites for this tag under the current GC / platform selection";
 
     const cb = el("input", "wiz-cb") as HTMLInputElement;
     cb.type = "checkbox";

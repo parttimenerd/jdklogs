@@ -90,6 +90,9 @@ details.wiz-group[open] > .wiz-group-head::before { content: "▾"; }
 .wiz-name { font-family: ui-monospace, monospace; font-weight: 600; }
 .wiz-desc { color: var(--muted); font-size: 12px; }
 .wiz-level { padding: 4px; border: 1px solid var(--border); border-radius: 6px; }
+.wiz-row.wiz-unavailable { opacity: .45; }
+.wiz-row.wiz-unavailable .wiz-name { font-weight: 400; }
+.wiz-group-dead > .wiz-group-head { opacity: .55; }
 
 .tabs { display: flex; gap: 4px; padding: 8px 24px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .tab { padding: 8px 14px; border: none; background: none; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); }
