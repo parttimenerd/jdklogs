@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<!-- SPDX-FileCopyrightText: 2026 SAP SE or an SAP affiliate company and jdklogs contributors -->
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>jdklogs — OpenJDK -Xlog explorer</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>%F0%9F%AA%B5</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="site-header">
+      <h1>jdklogs</h1>
+      <p class="tagline">
+        Type a HotSpot <code>-Xlog</code> selector and see which log statements in the OpenJDK
+        source would fire, with context and links to GitHub.
+      </p>
+    </header>
+
+    <div class="controls">
+      <div class="config-row">
+        <label for="version">Version</label>
+        <select id="version"></select>
+        <label for="gc">GC</label>
+        <select id="gc"></select>
+        <label for="platform">Platform</label>
+        <select id="platform"></select>
+        <div class="config-wrap">
+          <pre id="config-hl" class="config-hl" aria-hidden="true"></pre>
+          <input id="config" type="text" spellcheck="false" autocomplete="off"
+                 placeholder="e.g. gc*=info,heap*=debug" />
+          <div id="autocomplete" class="autocomplete"></div>
+        </div>
+        <button id="wizard-toggle" type="button">Show tag wizard</button>
+      </div>
+      <div id="error" class="error"></div>
+      <div class="level-legend">
+        <span>Levels:</span>
+        <span class="chip lvl-trace">trace</span>
+        <span class="chip lvl-debug">debug</span>
+        <span class="chip lvl-info">info</span>
+        <span class="chip lvl-warning">warning</span>
+        <span class="chip lvl-error">error</span>
+      </div>
+      <div id="wizard" class="wizard"></div>
+    </div>
+
+    <nav class="tabs">
+      <button class="tab active" data-panel="tab-sites">Firing sites</button>
+      <button class="tab" data-panel="tab-summary" id="tab-summary-btn">Summary</button>
+      <button class="tab" data-panel="tab-coverage" id="tab-coverage-btn">JFR coverage</button>
+      <button class="tab" data-panel="tab-log">Sample log</button>
+    </nav>
+
+    <main class="layout">
+      <div id="tab-sites" class="tab-panel active"></div>
+      <div id="tab-summary" class="tab-panel"></div>
+      <div id="tab-coverage" class="tab-panel"></div>
+      <div id="tab-log" class="tab-panel"></div>
+    </main>
+
+    <footer class="site-footer">
+      <p>
+        Contains excerpts of OpenJDK source code, subject to the OpenJDK license (GPLv2).
+        jdklogs is licensed GPL-2.0-only.
+      </p>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

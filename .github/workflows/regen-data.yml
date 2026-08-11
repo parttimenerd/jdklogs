@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 SAP SE or an SAP affiliate company and jdklogs contributors
+# SPDX-License-Identifier: GPL-2.0-only
+
+name: Regenerate data
+
+on:
+  schedule:
+    # 04:17 UTC on the 3rd of every month (off the top of the hour on purpose).
+    - cron: "17 4 3 * *"
+  workflow_dispatch:
+    inputs:
+      capture_samples:
+        description: "Also run the renaissance sample capture (needs a JDK build; slow)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  regen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Kotlin 2.0.21 crashes parsing JDK 25+ version strings, so the generator must be
+      # BUILT and RUN under JDK 21 (see generator/pom.xml). This is unrelated to which
+      # JDK *source* we scan.
+      - name: Set up JDK 21 (to build/run the generator)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build generator
+        working-directory: generator
+        run: mvn -B -ntp package -DskipTests
+
+      - name: Clone openjdk/jdk (master → head), shallow
+        run: |
+          git clone --depth 1 https://github.com/openjdk/jdk.git jdk-src
+          echo "HEAD_SHA=$(git -C jdk-src rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Generate site data for head
+        run: |
+          JAR=generator/target/jdklogs-generator-0.1.0-SNAPSHOT.jar
+          java -jar "$JAR" generate jdk-src head openjdk/jdk "$HEAD_SHA" data
+          java -jar "$JAR" tags jdk-src data
+
+      # Best-effort sample capture. Only on manual dispatch with the flag set: it needs a
+      # runnable JDK + renaissance and is slow. Without it, sites still ship with empty
+      # samples and the UI degrades gracefully. capture-samples.sh runs every available
+      # collector (G1/ZGC/Parallel) in parallel, so wall time is ~5 min + JVM warmup, not 3×.
+      - name: Capture samples (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_samples }}
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          JAR=generator/target/jdklogs-generator-0.1.0-SNAPSHOT.jar
+          mkdir -p capture
+          JAVA="$JAVA_HOME/bin/java" XLOG="all=trace" \
+            bash generator/bin/capture-samples.sh capture 300 scala-kmeans akka-uct
+          java -jar "$JAR" samples data/head.json capture
+
+      - name: Commit regenerated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No data changes."
+          else
+            git commit -m "chore(data): monthly regeneration (openjdk/jdk @ ${HEAD_SHA:0:12})"
+            git push
+          fi

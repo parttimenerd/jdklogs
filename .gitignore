@@ -1,0 +1,30 @@
+# Build output
+target/
+generator/target/
+site/node_modules/
+site/dist/
+# tsc byproducts — the served bundle is Vite → dist/, TS is the source of truth
+site/src/*.js
+site/test/*.js
+
+# Test artifacts
+site/test-results/
+site/playwright-report/
+site/.playwright-mcp/
+
+# Local JDK checkouts used only for generation
+.jdk-src/
+*.gclog
+*.gclog.gz
+
+# Transient capture/harness scratch dirs
+harness-*/
+capture/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store

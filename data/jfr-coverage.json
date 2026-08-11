@@ -1,0 +1,1588 @@
+{
+  "rules": [
+    {
+      "tags": [
+        "age",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCSurvivorConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcsurvivorconfiguration",
+      "note": "gc+age lines reporting desired survivor size and tenuring thresholds roughly relate to the initial/max tenuring threshold this survivor configuration event records."
+    },
+    {
+      "tags": [
+        "age",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.TenuringDistribution",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#tenuringdistribution",
+      "note": "age/tenuring cohort traces relate to TenuringDistribution.age/size (and GCSurvivorConfiguration threshold); dark-matter cohort population line is an aggregate not a per-age field match"
+    },
+    {
+      "tags": [
+        "age",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.YoungGarbageCollection",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#younggarbagecollection",
+      "note": "gc+age tenuring lines report the per-collection tenuring threshold that jdk.YoungGarbageCollection.tenuringThreshold carries."
+    },
+    {
+      "tags": [
+        "alloc",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.AllocationRequiringGC",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#allocationrequiringgc",
+      "note": "G1 allocation slow-path / humongous-allocation-request logs (e.g. 'Heap expansion (humongous allocation request). Allocation request: %zuB') report the allocation that triggers a GC; jdk.AllocationRequiringGC records the same triggering allocation size + pending gcId"
+    },
+    {
+      "tags": [
+        "alloc",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ZAllocationStall",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zallocationstall",
+      "note": "gc+alloc lines (zStat 'Mutator Allocation Rate', zGeneration 'Young Allocated') report allocation activity in the same subsystem where a mutator can stall; jdk.ZAllocationStall roughly relates by recording the stall type and size when allocation blocks."
+    },
+    {
+      "tags": [
+        "alloc",
+        "gc",
+        "region"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCHeapSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcheapsummary",
+      "note": "mutator allocation region-waste stats have no dedicated JFR event; GCHeapSummary only gives aggregate heapUsed"
+    },
+    {
+      "tags": [
+        "alloc",
+        "gc",
+        "stats"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1EvacuationOldStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1evacuationoldstatistics",
+      "note": "old-gen allocation-interval tracker (old/humongous allocated, growth) is adjacent to G1 old evacuation statistics but the fields are allocation-rate figures not evacuation byte counts"
+    },
+    {
+      "tags": [
+        "aot",
+        "load"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoad",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classload",
+      "note": "AOT bulk preload logs class name and class-loader category per class, same subsystem as ClassLoad but fires at AOT-linked class preload trace step, not the JFR ClassLoad event emission moment"
+    },
+    {
+      "tags": [
+        "aot",
+        "training"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassUnload",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classunload",
+      "note": "Sites s2112/s2113 ('Purged %s from MDO: unloaded class' / 'Purged %s from MDO: excluded class') log a class name during AOT-safepoint MDO cleanup when a class is found unloaded or excluded from the CDS archive. jdk.ClassUnload fires at GC-time when a class is actually unloaded \u2014 same class-lifecycle subsystem but a different moment/granularity (GC unload event vs AOT-safepoint exclusion sweep)."
+    },
+    {
+      "tags": [
+        "arguments"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.JVMInformation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#jvminformation",
+      "note": "JFR/VM argument-parsing lines report the JVM command-line/settings-file arguments that JVMInformation.jvmArguments/jvmFlags capture"
+    },
+    {
+      "tags": [
+        "barrier",
+        "nmethod"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.Deoptimization",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#deoptimization",
+      "note": "nmethod entry-barrier 'Deoptimizing nmethod' traces relate to deoptimization; jdk.Deoptimization records the resulting method-level deopt but not the barrier/return-address mechanics."
+    },
+    {
+      "tags": [
+        "breakpoint",
+        "class",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "Breakpoint set/clear trace during redefine method-version iteration; jdk.RedefineClasses fires at the bulk redefine level \u2014 same redefine subsystem, different (per-method-breakpoint) granularity."
+    },
+    {
+      "tags": [
+        "cds"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MetaspaceSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#metaspacesummary",
+      "note": "CDS/AOT archive dump-and-map internals share the metaspace subsystem but no event carries archive path/klass-count datum; nearest is MetaspaceSummary aggregate"
+    },
+    {
+      "tags": [
+        "class",
+        "constantpool",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "Constant-pool index adjustments per redefined class; jdk.ClassRedefinition carries per-class redefinitionId and classModificationCount for the same operation"
+    },
+    {
+      "tags": [
+        "class",
+        "constantpool",
+        "redefine",
+        "update"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "ResolvedMethod CP-update during redefinition is a per-class sub-step tracked by jdk.ClassRedefinition"
+    },
+    {
+      "tags": [
+        "class",
+        "data",
+        "loader"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoaderStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classloaderstatistics",
+      "note": "classLoaderDataGraph lines ('clean_deallocate_lists: loaders processed %u', 'do_unloading: loaders processed/removed %u') iterate over ClassLoaderData; jdk.ClassLoaderStatistics reports the per-loader snapshot (classLoader, classCount, chunk/block sizes, hidden class counts) for those same loaders."
+    },
+    {
+      "tags": [
+        "class",
+        "dump",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "Method list dumps are diagnostic traces within a VM_RedefineClasses operation covered by jdk.RedefineClasses"
+    },
+    {
+      "tags": [
+        "class",
+        "iklass",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "previous-version InstanceKlass lifecycle (add/purge) trace logs during redefinition; jdk.ClassRedefinition fires per redefined class with redefinedClass and redefinitionId"
+    },
+    {
+      "tags": [
+        "class",
+        "init"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoad",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classload",
+      "note": "class initialization lifecycle (initialize_impl waits/errors) is same class subsystem; ClassLoad carries class identity, no dedicated init event"
+    },
+    {
+      "tags": [
+        "class",
+        "interpreter",
+        "oopmap",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "OopMapCache flush of obsolete entries during RedefineClasses safepoint; jdk.RedefineClasses fires at redefine completion \u2014 same redefine subsystem, different (per-cache-entry) moment."
+    },
+    {
+      "tags": [
+        "class",
+        "link"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoad",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classload",
+      "note": "'Linked class %s' names a class in the load/link lifecycle; jdk.ClassLoad.loadedClass carries the class identity but fires at load, not the distinct link phase, so overlap is partial."
+    },
+    {
+      "tags": [
+        "class",
+        "load"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoad",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classload",
+      "note": "jdk.ClassLoad carries loadedClass + defining/initiating loaders + duration; these classpath/zip-open 'path:'/'opened:' info lines are loader-search bookkeeping, only loosely related (no path field in the event)."
+    },
+    {
+      "tags": [
+        "class",
+        "load",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "per-class loading/loaded/exception trace lines during VM_RedefineClasses; jdk.RedefineClasses summarizes the operation (classCount, redefinitionId) rather than each per-class line"
+    },
+    {
+      "tags": [
+        "class",
+        "mark",
+        "obsolete",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "marking old methods obsolete happens during a class redefinition; ClassRedefinition records the redefinedClass + modificationCount"
+    },
+    {
+      "tags": [
+        "class",
+        "metadata",
+        "obsolete",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "Vtable/itable/cp-cache obsolete-method consistency checks are post-redefinition diagnostics; jdk.ClassRedefinition tracks the per-class redefinition"
+    },
+    {
+      "tags": [
+        "class",
+        "methodcomparator",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "EMCP method comparator runs inside VM_RedefineClasses; jdk.RedefineClasses covers the enclosing redefinition operation"
+    },
+    {
+      "tags": [
+        "class",
+        "nestmates",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "NestHost attribute change error logs during redefine nest-host validation; jdk.RedefineClasses fires at redefine completion \u2014 same subsystem, different moment."
+    },
+    {
+      "tags": [
+        "class",
+        "nmethod",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.Compilation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#compilation",
+      "note": "nmethod::has_evol_metadata prints 'Found evol dependency of nmethod %s.%s(%s) compile_id=%d ...'; the compile_id and method identity align with jdk.Compilation's compileId+method fields, so a Compilation event roughly captures the compiled unit these nmethod lines reference."
+    },
+    {
+      "tags": [
+        "class",
+        "normalize",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "structural constraint-check logs (superclass, interface, field, method changes) during redefinition validation; jdk.ClassRedefinition fires per successfully redefined class with redefinedClass and redefinitionId"
+    },
+    {
+      "tags": [
+        "class",
+        "obsolete",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "Obsolete method call detection is part of per-class redefinition lifecycle tracked by jdk.ClassRedefinition"
+    },
+    {
+      "tags": [
+        "class",
+        "path"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoad",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classload",
+      "note": "classpath/module-path resolution and AOT location validation feed class loading; ClassLoad records the resolved class identity but not path-matching steps"
+    },
+    {
+      "tags": [
+        "class",
+        "preload"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoad",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classload",
+      "note": "preloading of value/loadable-descriptor field classes is class loading triggered during another load; ClassLoad carries loadedClass identity but not the preload cause"
+    },
+    {
+      "tags": [
+        "class",
+        "record",
+        "redefine"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "Record attribute change error logs during redefine record-attribute validation; jdk.RedefineClasses fires at redefine completion \u2014 same subsystem, different moment."
+    },
+    {
+      "tags": [
+        "class",
+        "redefine",
+        "stackmap"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "Stackmap constant-pool ref rewriting is a sub-step of class redefinition; jdk.RedefineClasses fires for the enclosing VM_RedefineClasses operation"
+    },
+    {
+      "tags": [
+        "class",
+        "redefine",
+        "subclass"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "subclass class-counter increment mirrors ClassRedefinition.classModificationCount for affected classes"
+    },
+    {
+      "tags": [
+        "class",
+        "redefine",
+        "timer"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RedefineClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
+      "note": "per-redefinition phase timing (vm_op/prologue/doit, phase1/phase2) is summarized by RedefineClasses.duration + redefinitionId"
+    },
+    {
+      "tags": [
+        "class",
+        "redefine",
+        "update"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassRedefinition",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classredefinition",
+      "note": "ResolvedMethodTable name adjustments occur per redefined class; jdk.ClassRedefinition tracks per-class redefinition"
+    },
+    {
+      "tags": [
+        "class",
+        "resolve"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoad",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classload",
+      "note": "Reflection-based class resolution logs from/to class names; jdk.ClassLoad covers class loading in the same subsystem"
+    },
+    {
+      "tags": [
+        "class",
+        "unload"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassLoadingStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classloadingstatistics",
+      "note": "class+unload lines (instanceKlass 'unloading class %s', klass 'unlinking class (sibling/subclass)') report per-class unload events whose running total is what jdk.ClassLoadingStatistics.unloadedClassCount aggregates (loadedClassCount for the load side)."
+    },
+    {
+      "tags": [
+        "class",
+        "unload"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ClassUnload",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classunload",
+      "note": "internal unlink graph steps (sibling/subclass/implementor) print the affected class name during unload; jdk.ClassUnload records the unloaded class but not these intermediate graph-walk lines"
+    },
+    {
+      "tags": [
+        "codecache"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CodeCacheConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#codecacheconfiguration",
+      "note": "Code-heap sizing / min-size log lines correspond to jdk.CodeCacheConfiguration segment-size fields; the aging/pressure log lines (allocation rate, cold gc count) have NO event counterpart."
+    },
+    {
+      "tags": [
+        "codecache"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CodeCacheFull",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#codecachefull",
+      "note": "report_codemem_full / handle_full_code_cache log lines announce a code heap running out of space; jdk.CodeCacheFull records the codeBlobType, entry/method counts, unallocated capacity and fullCount for that same condition (event carries structured data the free-form %s log lines summarize)."
+    },
+    {
+      "tags": [
+        "codecache",
+        "compiler"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CompilerStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#compilerstatistics",
+      "note": "CompileBroker's 'Code cache is full - disabling compilation' and related compiler-broker/codecache lines relate to the aggregate compiler activity that jdk.CompilerStatistics snapshots (compileCount, bailoutCount, invalidatedCount, nmethodsSize/nmethodCodeSize, total/peak time)."
+    },
+    {
+      "tags": [
+        "compilation"
+      ],
+      "match": "exact",
+      "jfrEvent": "jdk.CompilerConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#compilerconfiguration",
+      "note": "Some compilation-tagged startup lines report compiler/flag configuration; jdk.CompilerConfiguration captures threadCount, tieredCompilation, dynamicCompilerThreadCount but not arbitrary flag prints (partial)."
+    },
+    {
+      "tags": [
+        "container",
+        "os"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ContainerCPUUsage",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containercpuusage",
+      "note": "Cgroup CPU-usage read logs ('CPU Usage is', 'CPU Usage failed', cpu_usage_in_micros) source the same datum as jdk.ContainerCPUUsage.cpuTime/cpuUserTime/cpuSystemTime. Partial: logs are per-read trace diagnostics, event is a periodic aggregate."
+    },
+    {
+      "tags": [
+        "container",
+        "os"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ContainerConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containerconfiguration",
+      "note": "Cgroup limit/config parse logs ('CPU Quota is', 'CPU Period is', 'CPU Shares is', 'Memory Limit is', 'Memory and Swap Limit is', 'Memory Soft Limit is') read the same underlying values exposed by jdk.ContainerConfiguration fields cpuQuota/cpuSlicePeriod/cpuShares/memoryLimit/swapMemoryLimit/memorySoftLimit. Partial: the logs are low-level per-controller trace/debug diagnostics (v1/v2, hierarchy adjustment, path detection) with no 1:1 emission point, while the event is a single periodic snapshot."
+    },
+    {
+      "tags": [
+        "container",
+        "os"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ContainerMemoryUsage",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containermemoryusage",
+      "note": "Cgroup memory-usage read logs ('RSS usage is', 'Cache usage is', available/free container memory) relate to jdk.ContainerMemoryUsage.memoryUsage/swapMemoryUsage/memoryFailCount. Partial: the event does not expose RSS vs cache breakdown and fires periodically, whereas the logs are per-controller read traces."
+    },
+    {
+      "tags": [
+        "continuations"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ContinuationFreeze",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#continuationfreeze",
+      "note": "low-level continuation freeze/thaw/preempt traces; ContinuationFreeze/Thaw record the operation with size"
+    },
+    {
+      "tags": [
+        "continuations"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ContinuationThaw",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#continuationthaw",
+      "note": "continuation.cpp freeze/thaw subsystem logging roughly relates to ContinuationThaw/Continue (a continuation being resumed); no dedicated thaw log line but same continuations subsystem"
+    },
+    {
+      "tags": [
+        "continuations"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ContinuationThawSlow",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#continuationthawslow",
+      "note": "continuationFreezeThaw.cpp thaw-path logging roughly relates to ContinuationThawSlow, the slow-path continuation resume keyed by continuation id"
+    },
+    {
+      "tags": [
+        "continuations",
+        "preempt"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ContinuationFreezeSlow",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#continuationfreezeslow",
+      "note": "preempt-during-freeze log lines fire on the slow freeze path; roughly correspond to ContinuationFreezeSlow, which records slow-path freezes by continuation id"
+    },
+    {
+      "tags": [
+        "coops",
+        "gc",
+        "heap"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCHeapConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcheapconfiguration",
+      "note": "GCHeapConfiguration carries usesCompressedOops/compressedOopsMode/heapAddressBits and heap size limits; these coops sites log heap-base/compressed-oops decisions but the event is a one-shot config snapshot, not per-decision detail"
+    },
+    {
+      "tags": [
+        "cpu",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCCPUTime",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gccputime",
+      "note": "gcTraceTime User/Sys/Real line reports per-phase CPU time; GCCPUTime carries userTime/systemTime/realTime for the collection but at collection granularity, not per-traced-phase"
+    },
+    {
+      "tags": [
+        "cpu",
+        "os"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CPUInformation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#cpuinformation",
+      "note": "os,cpu feature-detection lines (RV64/x86 features, CPU model) roughly correspond to CPUInformation's cpu/description"
+    },
+    {
+      "tags": [
+        "cset",
+        "ergo",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.EvacuationInformation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#evacuationinformation",
+      "note": "G1 collection-set selection/optional-evacuation traces feed the aggregate EvacuationInformation (cSetRegions, cSetUsedBefore/After, regionsFreed); the per-decision predicted-time/region-count lines are heuristic detail not 1:1 fields"
+    },
+    {
+      "tags": [
+        "deoptimization"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.Deoptimization",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#deoptimization",
+      "note": "runtime-composed deopt reason strings; jdk.Deoptimization records reason/action per deopt but not these exact patch texts"
+    },
+    {
+      "tags": [
+        "director",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ZOldGarbageCollection",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zoldgarbagecollection",
+      "note": "ZDirector major-GC rule sites (timer, warmup, allocation-rate, proactive) fire at the decision point that triggers the old collection recorded by ZOldGarbageCollection"
+    },
+    {
+      "tags": [
+        "director",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ZYoungGarbageCollection",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zyounggarbagecollection",
+      "note": "ZDirector minor-GC rule sites (timer, allocation-rate, high-usage) fire at the decision point that triggers the same young collection recorded by ZYoungGarbageCollection; gcId ties them together"
+    },
+    {
+      "tags": [
+        "ergo",
+        "gc",
+        "heap"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1HeapSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapsummary",
+      "note": "G1 heap expand/shrink/resize ergonomic decisions (g1CollectedHeap, g1HeapSizingPolicy, g1Policy young sizing); G1HeapSummary reports resulting heap/eden/old sizes per GC but not the per-decision request bytes"
+    },
+    {
+      "tags": [
+        "ergo",
+        "gc",
+        "ihop"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1BasicIHOP",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1basicihop",
+      "note": "IHOP occupancy/threshold decision traces (s1199 non-young occupancy vs threshold) relate to G1BasicIHOP/G1AdaptiveIHOP.currentOccupancy+threshold but the log prints a per-decision allocation-request check, not the periodic IHOP statistics snapshot"
+    },
+    {
+      "tags": [
+        "exceptions"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.JavaExceptionThrow",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javaexceptionthrow",
+      "note": "Exception throw/handler logs partially covered: jdk.JavaExceptionThrow (thrownClass, message, stackTrace) and jdk.ExceptionStatistics (count) capture the thrown exception, but catch-handler-search and async-exception-install trace detail has no JFR field."
+    },
+    {
+      "tags": [
+        "exit",
+        "gc",
+        "heap"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GarbageCollection",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#garbagecollection",
+      "note": "accumulated young/old GC-time-at-exit lines summarize total pause time; GarbageCollection records per-collection sumOfPauses but there is no accumulated-lifetime-total field"
+    },
+    {
+      "tags": [
+        "fastlock"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.JavaMonitorEnter",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javamonitorenter",
+      "note": "fastlock log lines trace JIT stub code generation for synchronized method locking; jdk.JavaMonitorEnter fires at actual runtime monitor-enter events \u2014 same locking subsystem, different moment (compile-time stub generation vs. runtime lock acquisition)"
+    },
+    {
+      "tags": [
+        "finalizer"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.FinalizerStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#finalizerstatistics",
+      "note": "per-object finalizer register/run traces; FinalizerStatistics is the aggregate per-class rollup"
+    },
+    {
+      "tags": [
+        "free",
+        "gc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ShenandoahEvacuationInformation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#shenandoahevacuationinformation",
+      "note": "Shenandoah FreeSet region management logs (region shifts, reservations, FreeSet rebuild) are in the same subsystem as ShenandoahEvacuationInformation.freeRegions/cSetRegions"
+    },
+    {
+      "tags": [
+        "freelist",
+        "gc",
+        "metaspace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MetaspaceAllocationFailure",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#metaspaceallocationfailure",
+      "note": "metaspace expansion-blocked / cannot-expand lines are the failure path summarized once by MetaspaceAllocationFailure (size/metadataType), not a per-line field match"
+    },
+    {
+      "tags": [
+        "freelist",
+        "gc",
+        "metaspace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MetaspaceChunkFreeListSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#metaspacechunkfreelistsummary",
+      "note": "gc+metaspace+freelist expansion lines (allowed expansion words, can_expand) touch the same chunk free-list accounting this Before/After summary aggregates by chunk size class."
+    },
+    {
+      "tags": [
+        "gc",
+        "gc_ps_old_gen"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.PSHeapSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#psheapsummary",
+      "note": "Logs PS old gen shrink (from/by/to KB); jdk.PSHeapSummary fires per GC with oldSpace size covering the same PS old gen sizing, but at GC boundary rather than at shrink time."
+    },
+    {
+      "tags": [
+        "gc",
+        "gc_ps_young_gen"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.AllocationRequiringGC",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#allocationrequiringgc",
+      "note": "Log fires during PS heap allocation retry loop when retry count exceeds QueuedAllocationWarningCount; jdk.AllocationRequiringGC fires at the same PS allocation path when GC is invoked, but at GC-invocation moment not the retry-count warning."
+    },
+    {
+      "tags": [
+        "gc",
+        "gc_ps_young_gen"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.PSHeapSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#psheapsummary",
+      "note": "Logs PS young gen size change (old KB -> new KB); jdk.PSHeapSummary fires per GC with youngSpace size covering the same PS young gen sizing, but at GC summary time not per-resize."
+    },
+    {
+      "tags": [
+        "gc",
+        "gc_ps_young_gen"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.YoungGenerationConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#younggenerationconfiguration",
+      "note": "Logs PS young gen size at minimum boundary during resize; jdk.YoungGenerationConfiguration fires at GC init with minSize field, same young gen size subsystem but at configuration time not per-resize."
+    },
+    {
+      "tags": [
+        "gc",
+        "heap"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCHeapSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcheapsummary",
+      "note": "generic gc+heap occupancy/transition lines (used/committed/region counts) overlap heapUsed and per-space usage in GCHeapSummary/G1HeapSummary/PSHeapSummary, but the event is a before/after-GC snapshot, not the per-generation resize/waste breakdowns these logs print"
+    },
+    {
+      "tags": [
+        "gc",
+        "heap",
+        "numa"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCHeapSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcheapsummary",
+      "note": "G1 NUMA request-memory line names a NUMA id for a region range; no NUMA-specific JFR event exists, GCHeapSummary only carries aggregate heap usage"
+    },
+    {
+      "tags": [
+        "gc",
+        "heap",
+        "region"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1HeapRegionTypeChange",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapregiontypechange",
+      "note": "G1 committed-region-map activate/deactivate/uncommit over region ranges; G1HeapRegionTypeChange records per-region state transitions with start+used"
+    },
+    {
+      "tags": [
+        "gc",
+        "humongous"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1HeapRegionTypeChange",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapregiontypechange",
+      "note": "G1 humongous eager-reclaim log (s1231) prints region index, object size, and start address; G1HeapRegionTypeChange covers index/from/to/start/used for the same G1 region lifecycle subsystem"
+    },
+    {
+      "tags": [
+        "gc",
+        "ihop"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1BasicIHOP",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1basicihop",
+      "note": "G1 IHOP-control sites (target-occupancy updates and IHOP threshold logs). jdk.G1BasicIHOP/G1AdaptiveIHOP carry the threshold and occupancy values but not every ergonomic sub-field (e.g. plain 'Target occupancy update: old/new' is only the targetOccupancy delta)."
+    },
+    {
+      "tags": [
+        "gc",
+        "init"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcconfiguration",
+      "note": "init-logger lines print collector/heap/TLAB configuration; GCConfiguration + GCHeapConfiguration + GCTLABConfiguration + YoungGenerationConfiguration capture the settings but not the free-form per-line detail (region size/count, elasticity, mode/heuristics names)"
+    },
+    {
+      "tags": [
+        "gc",
+        "init"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCTLABConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gctlabconfiguration",
+      "note": "Init-logger 'TLAB Size Max' / 'TLAB: Disabled' lines report the same TLAB configuration this startup configuration event captures."
+    },
+    {
+      "tags": [
+        "gc",
+        "liveness"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1HeapRegionInformation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapregioninformation",
+      "note": "G1PrintRegionLivenessInfoClosure emits per-region capacity/used/live/type columns; jdk.G1HeapRegionInformation records the same per-region index/type/start/used snapshot (the fmt strings are streamed/empty so no exact join)"
+    },
+    {
+      "tags": [
+        "gc",
+        "load"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ZStatisticsSampler",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zstatisticssampler",
+      "note": "zStat.cpp gc+load/gc+mmu/gc+alloc summary lines (Load, MMU, Mutator Allocation Rate) are the periodic printed form of ZGC sampler values; jdk.ZStatisticsSampler records the same sampled metrics as (id, value)."
+    },
+    {
+      "tags": [
+        "gc",
+        "marking"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhaseConcurrent",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphaseconcurrent",
+      "note": "G1 'Concurrent Mark' phase status/duration log lines correspond to the concurrent-mark phase captured by GCPhaseConcurrent (name+duration+gcId); runtime-composed, not a static 1:1 field join."
+    },
+    {
+      "tags": [
+        "gc",
+        "metaspace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCHeapMemoryPoolUsage",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcheapmemorypoolusage",
+      "note": "Per-pool usage lines (metaspace used/committed/reserved) roughly relate to the used/committed/max reported per named pool by this event."
+    },
+    {
+      "tags": [
+        "gc",
+        "metaspace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MetaspaceChunkFreeListSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#metaspacechunkfreelistsummary",
+      "note": "MetaspaceUtils::print_metaspace_change reports metaspace usage across a GC; this event summarizes the underlying chunk free-list state (specialized/small/medium/humongous chunk counts and sizes) at the same Before/After points."
+    },
+    {
+      "tags": [
+        "gc",
+        "metaspace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MetaspaceGCThreshold",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#metaspacegcthreshold",
+      "note": "MetaspaceGCThreshold has oldValue/newValue/updater; captures the GC-threshold / capacity-to-GC change (compute_new_size, Increase capacity to GC) but not the intermediate percentage/HWM computations the trace logs print."
+    },
+    {
+      "tags": [
+        "gc",
+        "metaspace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MetaspaceOOM",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#metaspaceoom",
+      "note": "gc+metaspace exhaustion/critical-allocation lines (e.g. critical metaspace allocation almost out of memory) roughly relate to the failed metadata allocation size/metadataType this event records."
+    },
+    {
+      "tags": [
+        "gc",
+        "metaspace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MetaspaceSummary",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#metaspacesummary",
+      "note": "MetaspaceSummary reports reserved/committed/used per space (total/data/class) before+after GC; covers metaspace usage/summary log lines but not per-chunk detail."
+    },
+    {
+      "tags": [
+        "gc",
+        "mmu"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1MMU",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1mmu",
+      "note": "MMU tracker logs print the achieved minimum-mutator-utilization value (and target-violation warnings). jdk.G1MMU carries timeSlice/gcTime/pauseTarget for G1 only; it does not record the computed MMU percentage the log prints, and does not cover the ZGC ZStatMMU per-window summary (s1696) at all."
+    },
+    {
+      "tags": [
+        "gc",
+        "periodic"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.SystemGC",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#systemgc",
+      "note": "G1 periodic-GC task decisions (skip/deny/threshold/loadavg) have no JFR event; SystemGC only records when an explicit/triggered GC actually fires, not the periodic check outcomes"
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhaseConcurrent",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphaseconcurrent",
+      "note": "Concurrent phase name+duration lines (ZStatPhaseGeneration register_start/end '%s -> %.3fs', 'Concurrent Mark %.3fms') overlap GCPhaseConcurrent/ConcurrentLevel1..2 name+duration; abort/skip variants are not events."
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhaseConcurrentLevel2",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphaseconcurrentlevel2",
+      "note": "Nested (level 2) concurrent sub-phase timing prints (zStat phase '%s -> %.3fs', G1 debug/trace_time); jdk.GCPhaseConcurrentLevel2 records the same phase name and duration at the second concurrent nesting depth."
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhaseParallel",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphaseparallel",
+      "note": "Per-worker phase timings (adjust_pointers_in_spaces worker %u %.3fms, WeakProcessorTimes per-worker) map to GCPhaseParallel name+duration+gcWorkerId, but skip/dense-prefix diagnostics are uncaptured."
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhasePause",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphasepause",
+      "note": "G1/generic GC phase-time report lines (info_time/debug_time/trace_time/log_total indented '%s:' names) correspond to named GC phases carried by GCPhasePause / GCPhaseParallel with name+duration; log fmt is only an indent+name fragment so not 1:1 joinable"
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhasePauseLevel1",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphasepauselevel1",
+      "note": "Indented phase-timing prints (G1GCPhaseTimes info/debug/trace_time '%s: <dur>', zStat phase prints) report a phase name and its pause duration; jdk.GCPhasePauseLevel1 carries the same name+duration for the top nesting level of a stop-the-world pause."
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhasePauseLevel2",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphasepauselevel2",
+      "note": "Nested (level 2) sub-phase timing prints under a GC pause; jdk.GCPhasePauseLevel2 records the same phase name and duration at the second nesting depth."
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhasePauseLevel3",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphasepauselevel3",
+      "note": "Deeper (level 3) sub-phase timing prints under a GC pause (trace_time entries); jdk.GCPhasePauseLevel3 records the same phase name and duration at the third nesting depth."
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhasePauseLevel4",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphasepauselevel4",
+      "note": "Deepest (level 4) sub-phase timing prints under a GC pause; jdk.GCPhasePauseLevel4 records the same phase name and duration at the fourth nesting depth."
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.OldGarbageCollection",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#oldgarbagecollection",
+      "note": "Per-phase timing lines under gc+phases occur within the old collection window that jdk.OldGarbageCollection brackets by startTime/duration."
+    },
+    {
+      "tags": [
+        "gc",
+        "phases"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ParallelOldGarbageCollection",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#paralleloldgarbagecollection",
+      "note": "psParallelCompact phase lines (compaction/dense-prefix) fire during the parallel old collection this event times; roughly captures its gcId/duration and densePrefix boundary."
+    },
+    {
+      "tags": [
+        "gc",
+        "plab"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1EvacuationYoungStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1evacuationyoungstatistics",
+      "note": "G1EvacStats::log_plab_allocation/log_sizing print allocated/wasted/unused/used PLAB bytes and sizing; the G1EvacuationStatistics struct on G1EvacuationYoung/OldStatistics carries the aggregate evacuation/PLAB numbers (young vs old split), not the per-thread Shenandoah PLAB lines."
+    },
+    {
+      "tags": [
+        "gc",
+        "plab"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.PromoteObjectInNewPLAB",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#promoteobjectinnewplab",
+      "note": "PLAB allocation/sizing/boost/promotion aggregate stats logs are the rollup of per-object PromoteObjectInNewPLAB(plabSize) events; log is aggregate, event is per-object"
+    },
+    {
+      "tags": [
+        "gc",
+        "plab"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.PromoteObjectOutsidePLAB",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#promoteobjectoutsideplab",
+      "note": "gc+plab stat lines include direct/outside-PLAB allocation accounting ('direct allocated', 'num direct allocated'), which corresponds to the per-object promotions jdk.PromoteObjectOutsidePLAB traces (objectSize, tenuringAge, tenured)"
+    },
+    {
+      "tags": [
+        "gc",
+        "promotion"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.EvacuationFailed",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#evacuationfailed",
+      "note": "gc+promotion logs ('Promotion failed', 'Promotion failure size = ...') are the copy/evacuation-failure prints; jdk.EvacuationFailed (CopyFailed) captures this same failure per gcId"
+    },
+    {
+      "tags": [
+        "gc",
+        "promotion"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.PromotionFailed",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#promotionfailed",
+      "note": "'Promotion failure size = %zu' relates to PromotionFailed (fires at the failure) but the per-object failing size is not a field; the boolean/gcId payload is captured, the size is not."
+    },
+    {
+      "tags": [
+        "gc",
+        "ref"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCReferenceStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcreferencestatistics",
+      "note": "reference-processing execute/discover/keep/drop trace lines are per-reference operations that the GCReferenceStatistics aggregate summarizes by type+count"
+    },
+    {
+      "tags": [
+        "gc",
+        "region"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1HeapRegionTypeChange",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapregiontypechange",
+      "note": "G1HeapRegionPrinter G1HR lines describe per-region state/type changes; G1HeapRegionTypeChange carries index/from/to/used but not the printer's action verbs"
+    },
+    {
+      "tags": [
+        "gc",
+        "reloc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ZRelocationSetGroup",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zrelocationsetgroup",
+      "note": "'Candidate/Relocation Set (%s Pages): %d->%d ...' map to ZRelocationSetGroup type/candidatePages/selectedPages/relocate; the worker join/leave/synchronize churn and Young allocation/garbage heuristics are uncaptured."
+    },
+    {
+      "tags": [
+        "gc",
+        "reloc"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ZThreadPhase",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zthreadphase",
+      "note": "ZGC relocation/worker phase log lines (zRelocate.cpp Joining/Leaving/Synchronize workers, zGeneration reloc prints) track per-thread relocation phase progress that jdk.ZThreadPhase captures as (gcId, phase name, duration)."
+    },
+    {
+      "tags": [
+        "gc",
+        "remset",
+        "tracking"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1HeapRegionInformation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapregioninformation",
+      "note": "Per-region remset rebuild log (liveness, remset occupancy, size) is same G1 region subsystem as G1HeapRegionInformation (which carries index, used per region), but fires at a different moment (post-rebuild trace vs. periodic region dump) and lacks remset-specific fields."
+    },
+    {
+      "tags": [
+        "gc",
+        "remset",
+        "tracking"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCPhaseConcurrentLevel1",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphaseconcurrentlevel1",
+      "note": "G1 remset tracking selection (total/selected region counts) happens inside the 'Select For Rebuild' concurrent-mark sub-phase; GCPhaseConcurrentLevel1 fires for that same sub-phase carrying gcId and name, but at a coarser granularity \u2014 region counts are not JFR fields."
+    },
+    {
+      "tags": [
+        "gc",
+        "sampling"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.G1MMU",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1mmu",
+      "note": "Shenandoah cycle-duration/adaptive-heuristics sampling lines report predicted rates and cycle timing; no Shenandoah MMU/heuristics JFR event exists, G1MMU is the nearest MMU-tracking analogue but G1-only"
+    },
+    {
+      "tags": [
+        "gc",
+        "task"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ZThreadPhase",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zthreadphase",
+      "note": "ZWorkers 'Executing %s using %s with %u workers' / 'Using %u Workers for %s Generation' mark the start of a named ZGC worker phase; jdk.ZThreadPhase records the same named per-thread phase with its duration and gcId."
+    },
+    {
+      "tags": [
+        "gc",
+        "tlab"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.GCTLABConfiguration",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gctlabconfiguration",
+      "note": "TLAB resize/compute-size/totals/usage logs relate to TLAB subsystem; GCTLABConfiguration carries only static config (usesTLABs/minTLABSize/tlabRefillWasteLimit), runtime resize/usage values not in any event"
+    },
+    {
+      "tags": [
+        "generate",
+        "heapsampling"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ObjectAllocationSample",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#objectallocationsample",
+      "note": "verify_or_generate_log_table() builds the Poisson log table used by the heap sampler; jdk.ObjectAllocationSample is fired by the same sampler at each sampled allocation \u2014 same subsystem but init vs sample moment"
+    },
+    {
+      "tags": [
+        "handshake",
+        "task"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ExecuteVMOperation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#executevmoperation",
+      "note": "HandshakeOperation::do_handshake fires per-thread within a handshake (printing op name and per-thread completion time in ns), whereas jdk.ExecuteVMOperation covers the whole VM operation at a coarser granularity; same runtime/handshake subsystem but different moment and scope."
+    },
+    {
+      "tags": [
+        "heapdump"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.HeapDump",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#heapdump",
+      "note": "heap dump merge/segment operational messages; jdk.HeapDump records the dump event (destination,size)"
+    },
+    {
+      "tags": [
+        "hotcode"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CodeCacheFull",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#codecachefull",
+      "note": "s2453: logs unallocated capacity of MethodHot heap vs nmethod size when relocation would exceed capacity; CodeCacheFull carries unallocatedCapacity for a code heap \u2014 same code-cache capacity concept, different moment (full-detection event vs preemptive bail-out check)"
+    },
+    {
+      "tags": [
+        "hotcode"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CodeCacheStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#codecachestatistics",
+      "note": "s2458: logs total sample count and candidate nmethod count; CodeCacheStatistics carries methodCount per code heap \u2014 same code-cache/nmethod subsystem, different moment (periodic snapshot vs per-sampling-round candidate-list construction)"
+    },
+    {
+      "tags": [
+        "hotcode"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.Compilation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#compilation",
+      "note": "s2454/s2455/s2456: log per-nmethod relocation success/failure with method name and nmethod pointer; Compilation carries method identifier for compiled nmethods \u2014 same compiled-method subsystem, different moment (compile-time event vs post-compile hot-heap relocation)"
+    },
+    {
+      "tags": [
+        "hotcode"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ExecutionSample",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#executionsample",
+      "note": "s2457: fires when the JFR sampler's suspend lock blocks the hot-code sampling round; ExecutionSample is the JFR event produced by the same JFR thread sampler that holds the lock \u2014 same JFR sampling subsystem, different moment (per-sample fire vs lock-contention bail-out log)"
+    },
+    {
+      "tags": [
+        "inlining",
+        "jit"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CompilerInlining",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#compilerinlining",
+      "note": "library_call intrinsic generate/predicate emit a runtime-composed '%s' inlining message; jdk.CompilerInlining{message,caller,callee,bci} summarizes inlining decisions for these sites (fmt is a bare %s fragment, not field-joinable)"
+    },
+    {
+      "tags": [
+        "jfr",
+        "methodtrace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MethodTrace",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#methodtrace",
+      "note": "method-tracing instrumentation/retransform machinery that installs and emits MethodTrace events; prints setup diagnostics not the event datum"
+    },
+    {
+      "tags": [
+        "jfr",
+        "methodtrace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.RetransformClasses",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#retransformclasses",
+      "note": "The methodtrace subsystem drives JVMTI RetransformClasses to instrument methods ('Issuing Retransform Classes', 'Adding class ... to instrumented list', bytecode modification). jdk.RetransformClasses records the retransform operation (classCount, duration, stackTrace) but not the per-class instrumentation/bytecode detail the trace logs print."
+    },
+    {
+      "tags": [
+        "jfr",
+        "oldobject",
+        "sampling"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.OldObjectSample",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#oldobjectsample",
+      "note": "old-object leak sampler dropping/lock-contention diagnostics for the OldObjectSample profiler; no per-event field printed"
+    },
+    {
+      "tags": [
+        "jfr",
+        "redact"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.InitialEnvironmentVariable",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#initialenvironmentvariable",
+      "note": "jfrRedactedEvents::emit_initial_environment_variables emits InitialEnvironmentVariable; the 'Redacted initial environment variable named %s' lines log the key/value being emitted"
+    },
+    {
+      "tags": [
+        "jfr",
+        "redact"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.InitialSystemProperty",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#initialsystemproperty",
+      "note": "jfrRedactedEvents::emit_initial_system_properties emits InitialSystemProperty; 'Redacted initial system property named %s' logs the key being emitted (key/value)"
+    },
+    {
+      "tags": [
+        "jfr",
+        "redact"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.JVMInformation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#jvminformation",
+      "note": "jfrRedactedEvents::log_jvm_information_redaction ('Redacted %s %s') operates on JVMInformation fields (jvmArguments/javaArguments) as they are emitted"
+    },
+    {
+      "tags": [
+        "jfr",
+        "redact"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.StringFlagChanged",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#stringflagchanged",
+      "note": "JfrRedactedEvents::emit_string_flags logs \"Redacted string flag '%s'\" naming a string VM flag whose value the recording redacts/overrides; this is the string-flag subsystem and the jdk.StringFlagChanged event (name + oldValue + newValue + origin) is the closest same-area flag event (partial: log gives the flag name only, not a full old->new change)."
+    },
+    {
+      "tags": [
+        "jfr",
+        "system",
+        "throttle"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ObjectAllocationSample",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#objectallocationsample",
+      "note": "The adaptive-sampling throttler log names jdk.ObjectAllocationSample and reports the EWMA sample size, window set point, population size and window duration that govern its emission. jdk.ObjectAllocationSample carries the resulting samples (objectClass, weight) but none of the throttler tuning metrics the log prints, so this is partial."
+    },
+    {
+      "tags": [
+        "jfr",
+        "throttle"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ObjectAllocationSample",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#objectallocationsample",
+      "note": "adaptive-throttler window statistics (EWMA/set-point) governing ObjectAllocationSample emission; prints sampler internals, not event fields"
+    },
+    {
+      "tags": [
+        "library"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.NativeLibraryLoad",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativelibraryload",
+      "note": "Load/unload library logs partially covered by jdk.NativeLibraryLoad/Unload (name, success, errorMessage); FindLibraryEntry symbol-lookup lines are not covered."
+    },
+    {
+      "tags": [
+        "library"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.NativeLibraryUnload",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativelibraryunload",
+      "note": "native library unload/find-entry/base-address traces; NativeLibrary/NativeLibraryLoad/Unload carry the library name"
+    },
+    {
+      "tags": [
+        "map",
+        "os"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.NativeMemoryUsage",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativememoryusage",
+      "note": "NativeMemoryUsage (reserved/committed fields) captures the aggregate OS native-memory state built by these individual mmap/commit/uncommit/reserve/release calls; same OS memory subsystem but fired as a periodic snapshot, not per-operation trace"
+    },
+    {
+      "tags": [
+        "memops",
+        "perf"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.IntFlag",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#intflag",
+      "note": "PerfMemory::initialize() logs the runtime value of the PerfDataMemorySize int flag; jdk.IntFlag snapshots all int flag names+values at JFR recording start \u2014 same subsystem (JVM flags) but different moment."
+    },
+    {
+      "tags": [
+        "metaspace"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.MetaspaceAllocationFailure",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#metaspaceallocationfailure",
+      "note": "MetaspaceAllocationFailure carries size/metadataType/classLoader on a failed metadata allocation; related to critical-allocation / allocation-too-large log sites but not a 1:1 payload match."
+    },
+    {
+      "tags": [
+        "module"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ModuleExport",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#moduleexport",
+      "note": "module-table maintenance (reads-walk, purge, set_package, deletion, define) shares the modules subsystem; ModuleExport/ModuleRequire capture only export/require edges"
+    },
+    {
+      "tags": [
+        "monitorinflation"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.JavaMonitorInflate",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javamonitorinflate",
+      "note": "Monitor inflation/deflation logs partially covered: jdk.JavaMonitorInflate (monitorClass, address, cause) and jdk.JavaMonitorDeflate cover inflate/deflate points, but deflation-threshold/ceiling/audit lines have no JFR counterpart."
+    },
+    {
+      "tags": [
+        "monitorinflation",
+        "owner"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.JavaMonitorEnter",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javamonitorenter",
+      "note": "objectMonitor owner-transition traces (release_clear_owner/set_owner_from) are the ownership internals behind JavaMonitorEnter.previousOwner; runtime bookkeeping, no direct field join"
+    },
+    {
+      "tags": [
+        "monitorinflation",
+        "owner"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.JavaMonitorInflate",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javamonitorinflate",
+      "note": "Owner-transition traces (set_owner_from/release_clear_owner) share the monitor address with jdk.JavaMonitorInflate/Enter but the owner CAS bookkeeping itself is not a JFR field."
+    },
+    {
+      "tags": [
+        "nmt"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.NativeMemoryUsage",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativememoryusage",
+      "note": "NMT reserved/committed diagnostic traces; NativeMemoryUsage/Total carry reserved/committed per type"
+    },
+    {
+      "tags": [
+        "os"
+      ],
+      "match": "exact",
+      "jfrEvent": "jdk.PhysicalMemory",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#physicalmemory",
+      "note": "Host memory-query logs ('total system memory', 'available memory', 'free memory') relate to jdk.PhysicalMemory.totalSize/usedSize. Partial: the event is a periodic host-total snapshot; the logs are per-query traces (some containerized) and also cover available/free which the event does not separately expose."
+    },
+    {
+      "tags": [
+        "os"
+      ],
+      "match": "exact",
+      "jfrEvent": "jdk.SwapSpace",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#swapspace",
+      "note": "Host swap-query logs (os::free_swap_space host-value fallback) relate to jdk.SwapSpace.totalSize/freeSize. Partial: periodic event vs per-query trace, and containerized swap paths are not represented by this host-level event."
+    },
+    {
+      "tags": [
+        "os",
+        "processor"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CPUInformation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#cpuinformation",
+      "note": "os processor-topology log lines (active/logical processor counts, processor ids) correspond to CPUInformation's sockets/cores/hwThreads"
+    },
+    {
+      "tags": [
+        "os",
+        "thread"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ThreadEnd",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#threadend",
+      "note": "Native-thread teardown logs ('Thread finished (tid ...)', JavaThread::exit) coincide with JFR thread end. jdk.ThreadEnd records only the Java Thread identity, not the native tid/pthread id the log prints; partial (event-timing) overlap."
+    },
+    {
+      "tags": [
+        "os",
+        "thread"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ThreadStart",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#threadstart",
+      "note": "Native-thread start/attach logs ('Thread ... started', 'Thread attached', 'Thread is alive') coincide with JFR thread creation. jdk.ThreadStart records the new Java Thread + parent + stack trace, but NOT the native tid/pthread id, stack bounds, stack size, or pthread attributes the log prints; partial overlap on the thread-creation event only."
+    },
+    {
+      "tags": [
+        "safepoint"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.SafepointBegin",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointbegin",
+      "note": "Safepoint begin/synchronize/end trace lines (safepoint.cpp, templateInterpreter.cpp) map to the SafepointBegin/SafepointStateSynchronization/SafepointEnd family; JFR records safepointId + durations + thread counts but not the individual per-thread block/unblock trace lines."
+    },
+    {
+      "tags": [
+        "safepoint"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.SafepointEnd",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointend",
+      "note": "safepoint lifecycle log lines (Disarming/Leaving/complete) roughly correspond to SafepointEnd, which records the end and duration of a safepoint keyed by safepointId"
+    },
+    {
+      "tags": [
+        "safepoint"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.SafepointLatency",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointlatency",
+      "note": "safepoint reaching/synchronization lines roughly correspond to SafepointLatency, the time to bring all threads to the safepoint before it begins"
+    },
+    {
+      "tags": [
+        "safepoint"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.SafepointStateSynchronization",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointstatesynchronization",
+      "note": "safepoint arm/synchronize lines ('Arming safepoint', 'Setting thread local yield flag', 'Suspending GC threads', thread block/still-running counts) roughly correspond to SafepointStateSynchronization's per-iteration thread-count accounting"
+    },
+    {
+      "tags": [
+        "safepoint",
+        "stats"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ExecuteVMOperation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#executevmoperation",
+      "note": "safepoint stats summary ('Maximum vm operation time ... ns', 'Maximum sync time ns') aggregates the same per-operation timing that ExecuteVMOperation records individually"
+    },
+    {
+      "tags": [
+        "safepoint",
+        "stats"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.SafepointBegin",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointbegin",
+      "note": "SafepointTracing::statistics_exit_log rollup (max sync/vmop time) summarizes per-safepoint SafepointBegin/End durations; aggregate stats, no 1:1 field join"
+    },
+    {
+      "tags": [
+        "smr",
+        "thread"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ThreadEnd",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#threadend",
+      "note": "Threads::remove and smr_delete logs fire at thread exit / SMR reclaim; jdk.ThreadEnd covers thread identity for the same lifecycle boundary"
+    },
+    {
+      "tags": [
+        "smr",
+        "thread"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ThreadStart",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#threadstart",
+      "note": "Threads::add log fires at the same moment jdk.ThreadStart fires (new thread added to the thread list); JFR carries thread identity but not the internal ThreadsList pointer"
+    },
+    {
+      "tags": [
+        "stackbarrier"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.SafepointBegin",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointbegin",
+      "note": "SafepointMechanism::compute_poll_word operates in the safepoint-arming subsystem; jdk.SafepointBegin fires at VM-wide safepoint begin \u2014 same subsystem but different granularity (per-thread poll word vs whole-VM safepoint event)"
+    },
+    {
+      "tags": [
+        "stringtable"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.StringTableStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#stringtablestatistics",
+      "note": "string table growth/rehash/clean operational traces; StringTableStatistics is the periodic aggregate snapshot"
+    },
+    {
+      "tags": [
+        "stubs"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.CodeCacheFull",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#codecachefull",
+      "note": "Stub generation fails because CodeCache has no space \u2014 same CodeCache-full condition captured by jdk.CodeCacheFull, but at a different moment (startup stub setup vs JIT compilation overflow)"
+    },
+    {
+      "tags": [
+        "symboltable"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.SymbolTableStatistics",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#symboltablestatistics",
+      "note": "symbol table growth/rehash/clean operational traces; SymbolTableStatistics is the periodic aggregate snapshot"
+    },
+    {
+      "tags": [
+        "trimnative"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ResidentSetSize",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#residentsetsize",
+      "note": "trimnative logs RSS size before and after a native heap trim; jdk.ResidentSetSize captures RSS size periodically \u2014 same native-memory/RSS subsystem, different moment (per-trim vs. periodic sample)"
+    },
+    {
+      "tags": [
+        "vmthread"
+      ],
+      "match": "superset",
+      "jfrEvent": "jdk.ExecuteVMOperation",
+      "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#executevmoperation",
+      "note": "VM operation queue traces; jdk.ExecuteVMOperation records the operation name/duration per executed VM op"
+    }
+  ]
+}

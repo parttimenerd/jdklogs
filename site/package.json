@@ -1,0 +1,27 @@
+{
+  "name": "jdklogs-site",
+  "private": true,
+  "version": "0.1.0",
+  "license": "GPL-2.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test:oracle": "tsx test/oracle.mts",
+    "test:reverse": "tsx test/reverse.mts",
+    "test:jfc": "tsx test/jfc.mts",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/prismjs": "^1.26.6",
+    "tsx": "^4.23.12",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "ohm-js": "^17.1.0",
+    "prismjs": "^1.29.0"
+  }
+}

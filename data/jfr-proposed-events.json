@@ -1,0 +1,171 @@
+{
+  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 25 oracle (jfr metadata, 194 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract.",
+  "generatedFor": "trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info",
+  "proposed": [
+    {
+      "event": "jdk.StringDeduplicationStatistics",
+      "label": "String Deduplication Statistics",
+      "priority": "high",
+      "category": ["Java Virtual Machine", "GC", "Detailed"],
+      "rationale": "Concurrent string deduplication emits a rich per-cycle summary with no JFR analogue. JDK 26's jdk.StringDeduplication is a coarse counter; this per-cycle statistics summary (inspected/deduped/new-unknown counts + byte totals + ratio) is still uncovered.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "long", "name": "duration", "label": "Duration" },
+        { "type": "long", "name": "inspected", "label": "Inspected" },
+        { "type": "long", "name": "deduped", "label": "Deduplicated" },
+        { "type": "long", "name": "newUnknown", "label": "New Unknown" },
+        { "type": "long", "name": "dedupedBytes", "label": "Deduplicated Bytes" },
+        { "type": "long", "name": "newUnknownBytes", "label": "New Unknown Bytes" },
+        { "type": "long", "name": "totalDedupedBytes", "label": "Total Deduplicated Bytes" },
+        { "type": "long", "name": "totalNewUnknownBytes", "label": "Total New Unknown Bytes" },
+        { "type": "float", "name": "dedupedRatio", "label": "Deduplicated Ratio" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/shared/stringdedup/stringDedupStat.cpp",
+          "function": "void StringDedup::Stat::log_summary(const Stat* last_stat, c",
+          "logLine": "Concurrent String Deduplication %zu (inspected), %zu/ (new unknown), %zu/ (deduped), total avg deduped/new unknown bytes ,  (total deduped), (total new unknown),  of "
+        }
+      ]
+    },
+    {
+      "event": "jdk.ShenandoahCardStatistics",
+      "label": "Shenandoah Card Statistics",
+      "priority": "high",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
+      "rationale": "Shenandoah generational remembered-set card scanning emits detailed per-worker and cumulative dirty/clean card statistics with no JFR event. workerId = -1 denotes the cumulative row.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "int", "name": "workerId", "label": "Worker ID (-1 = cumulative)" },
+        { "type": "long", "name": "dirtyCards", "label": "Dirty Cards" },
+        { "type": "long", "name": "cleanCards", "label": "Clean Cards" },
+        { "type": "long", "name": "maxDirtyRun", "label": "Max Dirty Run" },
+        { "type": "long", "name": "maxCleanRun", "label": "Max Clean Run" },
+        { "type": "long", "name": "dirtyScans", "label": "Dirty Scans" },
+        { "type": "long", "name": "dirtyObjs", "label": "Dirty Objects" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahCardStats.cpp",
+          "function": "void ShenandoahCardStats::log() const",
+          "logLine": "Card stats: dirty %zu (max run: %zu), clean %zu (max run: %zu), dirty scans/objs %zu"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahScanRemembered.cpp",
+          "function": "void ShenandoahScanRemembered::log_worker_card_stats(uint wo",
+          "logLine": "Worker %u Card Stats: "
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahScanRemembered.cpp",
+          "function": "void ShenandoahScanRemembered::log_card_stats(HdrSeq* stats)",
+          "logLine": "%18s: [ %8.2f %8.2f %8.2f %8.2f %8.2f ]"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahScanRemembered.cpp",
+          "function": "void ShenandoahScanRemembered::log_card_stats(uint nworkers,",
+          "logLine": "Cumulative stats"
+        }
+      ]
+    },
+    {
+      "event": "jdk.ShenandoahMMU",
+      "label": "Shenandoah Minimum Mutator Utilization",
+      "priority": "medium",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
+      "rationale": "Shenandoah's MMU tracker prints GC utilization (GCU) and mutator utilization (MU) per phase increment with no JFR analogue. Directly parallels the existing jdk.GCCPUTime event but for Shenandoah mutator-utilization accounting.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "String", "name": "phase", "label": "Phase" },
+        { "type": "float", "name": "gcuPercent", "label": "GC Utilization Percent" },
+        { "type": "float", "name": "muPercent", "label": "Mutator Utilization Percent" },
+        { "type": "long", "name": "duration", "label": "Duration" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp",
+          "function": "void ShenandoahMmuTracker::record_old_marking_increment(bool",
+          "logLine": "At end of %s: GCU: %.1f%%, MU: %.1f%% for duration %.3fs (totals to be subsumed in next gc report)"
+        }
+      ]
+    },
+    {
+      "event": "jdk.ShenandoahEvacuationProgress",
+      "label": "Shenandoah Evacuation Progress",
+      "priority": "medium",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
+      "rationale": "Shenandoah's metrics snapshot decides whether a cycle made 'good progress' across free space, used space, and internal/external fragmentation, printing actual-vs-needed per dimension. No JFR event carries this.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "String", "name": "dimension", "label": "Dimension" },
+        { "type": "double", "name": "actual", "label": "Actual" },
+        { "type": "double", "name": "needed", "label": "Needed" },
+        { "type": "boolean", "name": "goodProgress", "label": "Good Progress" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp",
+          "function": "bool ShenandoahMetricsSnapshot::is_good_progress() const",
+          "logLine": "%s progress for free space: , need "
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp",
+          "function": "bool ShenandoahMetricsSnapshot::is_good_progress() const",
+          "logLine": "%s progress for used space: , need "
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp",
+          "function": "bool ShenandoahMetricsSnapshot::is_good_progress() const",
+          "logLine": "%s progress for internal fragmentation: %.1f%%, need %.1f%%"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp",
+          "function": "bool ShenandoahMetricsSnapshot::is_good_progress() const",
+          "logLine": "%s progress for external fragmentation: %.1f%%, need %.1f%%"
+        }
+      ]
+    },
+    {
+      "event": "jdk.ZNMethodRegistration",
+      "label": "ZGC NMethod Registration",
+      "priority": "low",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "Z"],
+      "rationale": "ZGC periodically reports the count of registered vs unregistered nmethods. A clean 1:1 periodic snapshot with no existing event.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "long", "name": "registered", "label": "Registered" },
+        { "type": "long", "name": "unregistered", "label": "Unregistered" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/z/zStat.cpp",
+          "function": "void ZStatNMethods::print()",
+          "logLine": "NMethods: %zu registered, %zu unregistered"
+        }
+      ]
+    },
+    {
+      "event": "jdk.GCOverheadLimitExceeded",
+      "label": "GC Overhead Limit Exceeded",
+      "priority": "medium",
+      "category": ["Java Virtual Machine", "GC", "Detailed"],
+      "rationale": "Fires immediately before the JVM throws OutOfMemoryError: GC Overhead Limit exceeded. A high-signal failure moment that is currently invisible to JFR; complements jdk.OldObjectSample / jdk.AllocationRequiringGC narratives.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "int", "name": "gcId", "label": "GC Identifier" },
+        { "type": "long", "name": "count", "label": "Consecutive Overhead-Limit Count" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/g1/g1CollectedHeap.cpp",
+          "function": "HeapWord* G1CollectedHeap::satisfy_failed_allocation(size_t ",
+          "logLine": "GC Overhead Limit exceeded too often (%zu)."
+        },
+        {
+          "file": "src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp",
+          "function": "HeapWord* ParallelScavengeHeap::satisfy_failed_allocation(si",
+          "logLine": "GC Overhead Limit exceeded too often (%zu)."
+        }
+      ]
+    }
+  ]
+}

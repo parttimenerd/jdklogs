@@ -1,0 +1,17 @@
+version = 1
+SPDX-PackageName = "jdklogs"
+SPDX-PackageSupplier = "johannes.bechberger@sap.com"
+SPDX-PackageDownloadLocation = "https://github.com/parttimenerd/jdklogs"
+SPDX-PackageComment = "This project embeds excerpts of OpenJDK source code (in the generated data/ files and in the rendered snippets). Those excerpts are Copyright of Oracle and/or its affiliates and other OpenJDK contributors, and are licensed under the GNU General Public License version 2 only. Accordingly this whole project is distributed under GPL-2.0-only."
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 SAP SE or an SAP affiliate company and jdklogs contributors"
+SPDX-License-Identifier = "GPL-2.0-only"
+
+[[annotations]]
+path = "data/**"
+precedence = "override"
+SPDX-FileCopyrightText = "Oracle and/or its affiliates and other OpenJDK contributors"
+SPDX-License-Identifier = "GPL-2.0-only"
