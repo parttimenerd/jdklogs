@@ -11,6 +11,7 @@
     "test:oracle": "tsx test/oracle.mts",
     "test:reverse": "tsx test/reverse.mts",
     "test:jfc": "tsx test/jfc.mts",
+    "test:versions": "tsx test/versions.mts",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
