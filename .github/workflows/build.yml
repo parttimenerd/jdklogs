@@ -7,6 +7,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # Auto-deploy after a data regen finishes, so a fresh head/21/25 cache goes live on its own
+  # (no manual re-run, and no race where a push-triggered build beats the cache being saved).
+  # Gated on success below — a failed regen must not trigger a deploy of stale/empty data.
+  workflow_run:
+    workflows: ["Regenerate data"]
+    types: [completed]
 
 # Allow one concurrent deployment; newer pushes cancel in-progress ones.
 concurrency:
@@ -21,6 +27,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # For push/workflow_dispatch this is always true; for a workflow_run trigger, only proceed when
+    # the upstream "Regenerate data" run succeeded — never deploy off a failed/empty regen.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     defaults:
       run:
         working-directory: site
