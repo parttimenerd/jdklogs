@@ -301,4 +301,10 @@ summary.evt-head:hover .evt-name { text-decoration: underline; }
   .config-field select { flex: 1; }
   #config-copy, #share-link, #wizard-toggle { order: 2; flex: 1 1 auto; }
   #wizard-toggle { flex-basis: 100%; }
+  .chip-filter-row { gap: 8px; }
+  .chip-filter { padding: 6px 12px; font-size: 12px; min-height: 32px; }
+  .results-header { position: static; }              /* sticky is jumpy on mobile; disable */
+  .cov-summary { flex-wrap: wrap; gap: 8px; }
+  .evt-group { overflow-wrap: anywhere; }
+  .first-hint { font-size: 13px; }
 }
