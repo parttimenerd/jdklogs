@@ -84,11 +84,12 @@ test("nonsense config shows a doesn't-make-sense warning", async ({ page }) => {
   await expect(page.locator(".warn-item")).toContainText("no log site has");
 });
 
-test("volume estimate renders with a per-tag split", async ({ page }) => {
+test("volume estimate renders a headline and a per-tagset rate in the count table", async ({ page }) => {
   await setConfig(page, "gc*=info");
   await openSummary(page);
   await expect(page.locator(".vol-total")).toContainText("MB / hour");
-  await expect(page.locator(".vol-row").first()).toContainText("/h");
+  // The per-(level,tagset) MB/h split now lives inline in the "By level + tag set" table.
+  await expect(page.locator(".count-rate").first()).toContainText("/h");
 });
 
 test("sample log tab loads and filters", async ({ page }) => {
@@ -136,7 +137,8 @@ test("JFR coverage tab 'By JFR event' lists events with the log lines they repla
   const firstEvent = section.locator("a.evt-name").first();
   await expect(firstEvent).toBeVisible();
   await expect(firstEvent).toHaveAttribute("href", /sap\.github\.io\/jfrevents\/.+#/);
-  // and it shows at least one verbatim log line it replaces
+  // The event list is collapsed by default; open the first group to reveal the log lines it replaces.
+  await section.locator("details.evt-group").first().evaluate((el) => ((el as HTMLDetailsElement).open = true));
   await expect(section.locator(".evt-line").first()).toBeVisible();
 });
 
@@ -172,6 +174,8 @@ test("covered/partial counts expand to sites grouped by covering JFR event", asy
   const coveredEvent = detail.locator(".cov-bucket .evt-group a.evt-name").first();
   await expect(coveredEvent).toBeVisible();
   await expect(coveredEvent).toHaveAttribute("href", /sap\.github\.io\/jfrevents\/.+#/);
+  // Every covered event is badged as a verified 1:1 replacement.
+  await expect(detail.locator(".cov-bucket .evt-group .cov-badge-exact").first()).toHaveText("1:1");
   // Each group lists the log lines it covers, linking to the GitHub source.
   await expect(detail.locator("a.evt-line").first()).toHaveAttribute("href", /github\.com\/openjdk\/jdk\/blob\//);
 
@@ -179,6 +183,8 @@ test("covered/partial counts expand to sites grouped by covering JFR event", asy
   await openBucket(page, "partial");
   await expect(detail).toBeVisible();
   await expect(detail.locator(".cov-bucket .evt-group a.evt-name").first()).toBeVisible();
+  // Partial events are badged either "partial" (per-site curated) or "same subsystem" (tag rule).
+  await expect(detail.locator(".cov-bucket .cov-badge-partial, .cov-bucket .cov-badge-rule").first()).toBeVisible();
   await expect(page.locator('.cov-summary span[data-bucket="partial"]')).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator('.cov-summary span[data-bucket="covered"]')).toHaveAttribute("aria-expanded", "false");
 
@@ -207,7 +213,23 @@ test("JFR coverage tab shows per-event volume estimate and example log messages"
   await expect(ex.locator("summary")).toContainText(/Example log messages/i);
 });
 
-test("JFR coverage tab offers a .jfc download whose contents are a valid configuration", async ({ page }) => {
+test("JFR coverage 'By JFR event' list is collapsed by default with an expand-all toggle", async ({ page }) => {
+  await setConfig(page, "gc*=debug");
+  await openCoverage(page);
+  const section = page.locator(".event-index");
+  // Header states how many events map, and every event group is a collapsed <details> by default.
+  await expect(section.locator(".evt-index-count")).toContainText(/events? map to firing sites/);
+  const groups = section.locator("details.evt-group");
+  expect(await groups.evaluateAll((els) => els.every((e) => !(e as HTMLDetailsElement).open))).toBe(true);
+  // "Expand all" opens every group; label flips to "Collapse all".
+  const toggle = section.locator(".evt-index-head .collapse-all-btn");
+  await expect(toggle).toHaveText("Expand all");
+  await toggle.click();
+  expect(await groups.evaluateAll((els) => els.every((e) => (e as HTMLDetailsElement).open))).toBe(true);
+  await expect(toggle).toHaveText("Collapse all");
+});
+
+test("JFR coverage tab offers a .jfc download of the recommended events", async ({ page }) => {
   await setConfig(page, "gc*=debug");
   await openCoverage(page);
   const btn = page.locator(".jfc-btn").first();

@@ -147,6 +147,9 @@ function renderCoverage(
   // to their sites grouped by covering JFR event; uncovered expands to the tag-set gap worklist.
   const bar = document.createElement("div");
   bar.className = "cov-summary";
+  const barHint = document.createElement("span");
+  barHint.className = "cov-hint";
+  barHint.textContent = "— click a bucket to list its sites";
 
   const detail = document.createElement("div");
   detail.className = "cov-detail hidden";
@@ -192,6 +195,14 @@ function renderCoverage(
     span.setAttribute("tabindex", "0");
     span.setAttribute("aria-expanded", "false");
     span.textContent = `${glyph} ${counts[bucket]} ${bucket}`;
+    if (counts[bucket] > 0) {
+      const caret = document.createElement("span");
+      caret.className = "cov-caret";
+      caret.setAttribute("aria-hidden", "true");
+      caret.textContent = "▸";
+      span.appendChild(document.createTextNode(" "));
+      span.appendChild(caret);
+    }
     const fire = (): void => { if (counts[bucket] > 0) toggle(bucket, span); };
     span.addEventListener("click", fire);
     span.addEventListener("keydown", (e) => {
@@ -200,6 +211,7 @@ function renderCoverage(
     if (counts[bucket] === 0) span.setAttribute("aria-disabled", "true");
     bar.appendChild(span);
   }
+  bar.appendChild(barHint);
   sec.appendChild(bar);
   sec.appendChild(detail);
 
@@ -230,7 +242,22 @@ function renderCoverage(
     );
     actions.appendChild(b);
   }
-  if (actions.children.length > 0) sec.appendChild(actions);
+  if (actions.children.length > 0) {
+    sec.appendChild(actions);
+    // Scope note: the two buttons offer very different presets — the dynamic one tracks the current
+    // -Xlog selector, the full one is everything jdklogs knows about. Spell that out so a user doesn't
+    // grab the 130-event preset thinking it matches their config.
+    const note = document.createElement("div");
+    note.className = "jfc-note";
+    const dynTxt = dyn.length > 0
+      ? `<strong>${dyn.length}</strong> events cover the log lines your current selector fires`
+      : "";
+    const allTxt = all.length > 0
+      ? `the full preset records <strong>all ${all.length}</strong> events jdklogs maps, regardless of your selector`
+      : "";
+    note.innerHTML = [dynTxt, allTxt].filter(Boolean).join("; ") + ".";
+    sec.appendChild(note);
+  }
 
   return sec;
 }
@@ -259,7 +286,7 @@ function renderBucketByEvent(
   wrap.className = "cov-bucket";
   const index = indexMappingsByKind(mappings);
 
-  interface Group { event: string; url: string; note?: string; related?: string[]; sites: SiteJson[]; }
+  interface Group { event: string; url: string; note?: string; related?: string[]; origin?: "mapping" | "rule"; sites: SiteJson[]; }
   const groups = new Map<string, Group>();
   for (const s of bucket) {
     const cov = classifySite(s, index, rules);
@@ -268,6 +295,9 @@ function renderBucketByEvent(
     const g = groups.get(event) ?? { event, url, sites: [] };
     if (cov.note && !g.note) g.note = cov.note;
     if (cov.relatedEvents && !g.related) g.related = cov.relatedEvents;
+    // A per-site curated mapping is a stronger claim than a broad tag-set rule; if any site in the
+    // group is mapping-backed, label the whole group as curated (the note/related come from it too).
+    if (cov.origin === "mapping" || !g.origin) g.origin = cov.origin;
     g.sites.push(s);
     groups.set(event, g);
   }
@@ -304,6 +334,25 @@ function renderBucketByEvent(
       name.textContent = g.event;
       head.appendChild(name);
     }
+    // Badge the strength of the claim: an exact 1:1 replacement vs a partial, and for partials
+    // whether it's a per-site curated mapping or a broad same-subsystem rule. This is the crux of
+    // "covered vs partial" — the bucket you clicked implies the state, but the badge makes the
+    // *degree* of each event's match legible without reading the note.
+    const badge = document.createElement("span");
+    if (state === "covered") {
+      badge.className = "cov-badge cov-badge-exact";
+      badge.textContent = "1:1";
+      badge.title = "Verified one-to-one replacement: this event carries the log line's information.";
+    } else if (g.origin === "mapping") {
+      badge.className = "cov-badge cov-badge-partial";
+      badge.textContent = "partial";
+      badge.title = "Most of the log line's information is in this event (or computable from it), per a per-site review.";
+    } else {
+      badge.className = "cov-badge cov-badge-rule";
+      badge.textContent = "same subsystem";
+      badge.title = "This event lives in the same subsystem, but the match hasn't been verified line-for-line.";
+    }
+    head.appendChild(badge);
     const count = document.createElement("span");
     count.className = "evt-count";
     count.textContent = `${g.sites.length} log line${g.sites.length === 1 ? "" : "s"}`;
@@ -322,13 +371,21 @@ function renderBucketByEvent(
     if (g.note) {
       const note = document.createElement("div");
       note.className = "evt-note";
-      note.textContent = g.note;
+      // For a partial, frame the note as what the event *captures*; for covered it's a plain remark.
+      if (state === "partial") {
+        const lbl = document.createElement("strong");
+        lbl.textContent = "Captures: ";
+        note.appendChild(lbl);
+        note.appendChild(document.createTextNode(g.note));
+      } else {
+        note.textContent = g.note;
+      }
       el.appendChild(note);
     }
     if (state === "partial" && g.related && g.related.length > 0) {
       const rel = document.createElement("div");
       rel.className = "evt-rel";
-      rel.appendChild(document.createTextNode("also: "));
+      rel.appendChild(document.createTextNode("Recover the rest with: "));
       for (const r of g.related) {
         const c = document.createElement("a");
         c.className = "chip evt-rel-chip";
@@ -491,11 +548,33 @@ function renderEventIndex(
     return sec;
   }
 
+  // Header with an expand/collapse-all toggle: this list runs to dozens of events (thousands at
+  // all=trace), so each event is a collapsed <details> by default — the head line stays scannable,
+  // the log lines it replaces expand on demand. Mirrors the Firing sites tab's file groups.
+  const headRow = document.createElement("div");
+  headRow.className = "evt-index-head";
+  const count = document.createElement("span");
+  count.className = "evt-index-count";
+  count.textContent = `${withExact.length} event${withExact.length === 1 ? "" : "s"} map to firing sites`;
+  headRow.appendChild(count);
+  const toggleAll = document.createElement("button");
+  toggleAll.type = "button";
+  toggleAll.className = "collapse-all-btn";
+  toggleAll.textContent = "Expand all";
+  toggleAll.addEventListener("click", () => {
+    const groups = [...sec.querySelectorAll<HTMLDetailsElement>("details.evt-group")];
+    const anyOpen = groups.some((g) => g.open);
+    for (const g of groups) g.open = !anyOpen;
+    toggleAll.textContent = anyOpen ? "Expand all" : "Collapse all";
+  });
+  headRow.appendChild(toggleAll);
+  sec.appendChild(headRow);
+
   for (const e of withExact) {
-    const g = document.createElement("div");
+    const g = document.createElement("details");
     g.className = "evt-group";
 
-    const head = document.createElement("div");
+    const head = document.createElement("summary");
     head.className = "evt-head";
     const link = document.createElement("a");
     link.className = "evt-name";
@@ -503,6 +582,8 @@ function renderEventIndex(
     link.target = "_blank";
     link.rel = "noopener";
     link.textContent = e.event;
+    // The <summary> toggles on click; let the doc link work without also toggling the disclosure.
+    link.addEventListener("click", (ev) => ev.stopPropagation());
     head.appendChild(link);
     const count = document.createElement("span");
     count.className = "evt-count";

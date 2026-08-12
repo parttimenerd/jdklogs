@@ -98,4 +98,6 @@ export interface CoverageResult {
   jfrEventsUrl?: string;
   note?: string;
   relatedEvents?: string[];  // for a per-site partial: events that together recover the datum
+  /** How a `partial` verdict was reached: a per-site curated mapping vs a broad tag-set rule. */
+  origin?: "mapping" | "rule";
 }

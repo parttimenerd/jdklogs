@@ -72,6 +72,7 @@ export function classifySite(
       jfrEventsUrl: pm.jfrEventsUrl,
       note: pm.coverageNote,
       relatedEvents: pm.relatedEvents,
+      origin: "mapping",
     };
   }
   let best: CoverageRule | null = null;
@@ -80,7 +81,7 @@ export function classifySite(
     if (best === null || r.tags.length > best.tags.length) best = r;
   }
   if (best) {
-    return { state: "partial", jfrEvent: best.jfrEvent, jfrEventsUrl: best.jfrEventsUrl, note: best.note };
+    return { state: "partial", jfrEvent: best.jfrEvent, jfrEventsUrl: best.jfrEventsUrl, note: best.note, origin: "rule" };
   }
   return { state: "uncovered" };
 }

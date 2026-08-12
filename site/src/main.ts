@@ -189,7 +189,15 @@ function renderPanel(panelId: string): void {
     );
     rendered.sites = true;
   } else if (panelId === "tab-summary" && !rendered.summary) {
-    renderSummary($("#tab-summary"), fires, warnings, vol);
+    renderSummary($("#tab-summary"), fires, warnings, vol, (file) => {
+      // Jump to the Sites tab filtered to this file: set the filter, switch tabs, persist, render.
+      state.sitesQuery = file;
+      state.tab = "tab-sites";
+      rendered.sites = false;
+      writeUrlState(state);
+      activateTab("tab-sites");
+      document.querySelector<HTMLElement>(".tab.active")?.scrollIntoView({ block: "nearest" });
+    });
     rendered.summary = true;
   } else if (panelId === "tab-coverage" && !rendered.coverage) {
     renderCoverageTab($("#tab-coverage"), state.data, fires, state.mappings, state.coverage, state.gc);
