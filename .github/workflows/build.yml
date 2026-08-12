@@ -104,8 +104,71 @@ jobs:
         with:
           path: site/dist
 
+  # Gate deploy on the test suite: build alone only proves tsc + vite succeed, not that the app
+  # behaves. This job restores the same data cache (the e2e suite loads data/head.json + tags.json)
+  # and runs the fast unit tests + the Playwright e2e suite. The oracle test is intentionally NOT
+  # run here — it spawns a real JVM and is a manual/local check, not a CI gate.
+  test:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Restore generated data from cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            data/head.json
+            data/head.G1.log
+            data/head.ZGC.log
+            data/head.Parallel.log
+            data/21.json
+            data/21.G1.log
+            data/21.ZGC.log
+            data/21.Parallel.log
+            data/25.json
+            data/25.G1.log
+            data/25.ZGC.log
+            data/25.Parallel.log
+            data/tags.json
+          key: site-data-v1-restore-placeholder
+          restore-keys: |
+            site-data-v1-
+
+      - name: Verify generated data is present
+        working-directory: .
+        run: |
+          missing=0
+          for f in data/head.json data/tags.json; do
+            if [ ! -s "$f" ]; then echo "::error::missing generated data: $f"; missing=1; fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo "::error::Generated data cache is empty. Run the 'Regenerate data' workflow (workflow_dispatch) to populate the site-data-v1-* cache, then re-run this build."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - run: npm ci
+
+      # Fast, self-contained unit tests (no JVM, no external data): reverse index + .jfc builder.
+      - run: npm run test:reverse
+      - run: npm run test:jfc
+
+      # The e2e suite builds + previews the site (see playwright.config webServer) and drives it in
+      # a real browser, so it needs the chromium binary. Install only chromium (the sole project).
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
   deploy:
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
