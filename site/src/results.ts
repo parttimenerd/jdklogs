@@ -27,13 +27,26 @@ export function renderFiringSites(
   gc: string,
   initialQuery = "",
   onQueryChange?: (q: string) => void,
-  blockLinkFor?: (blockId: string) => string
+  blockLinkFor?: (blockId: string) => string,
+  onExample?: (cfg: string) => void
 ): void {
   root.innerHTML = "";
   if (fires.length === 0) {
     const d = document.createElement("div");
-    d.className = "note";
-    d.textContent = "No log sites fire for this config.";
+    d.className = "note empty-state";
+    const p = document.createElement("p");
+    p.textContent = "No log sites fire for this config.";
+    d.appendChild(p);
+    const hint = document.createElement("p");
+    hint.className = "empty-hint";
+    hint.appendChild(document.createTextNode("Try a broader selector like "));
+    const ex = document.createElement("a");
+    ex.className = "empty-ex";
+    ex.textContent = "gc*=info";
+    if (onExample) ex.addEventListener("click", () => onExample("gc*=info"));
+    hint.appendChild(ex);
+    hint.appendChild(document.createTextNode(", or open the tag wizard to browse every logging category."));
+    d.appendChild(hint);
     root.appendChild(d);
     return;
   }
@@ -55,7 +68,7 @@ export function renderFiringSites(
   const toggleAll = document.createElement("button");
   toggleAll.type = "button";
   toggleAll.className = "collapse-all-btn";
-  toggleAll.textContent = "Collapse all";
+  toggleAll.textContent = "Expand all";
   toggleAll.addEventListener("click", () => {
     const groups = [...root.querySelectorAll<HTMLDetailsElement>(".file-group")];
     const anyOpen = groups.some((g) => g.open);
@@ -99,7 +112,7 @@ export function renderFiringSites(
 
   // Render a list of units into per-file <details> groups, capped at BLOCK_CAP with a "render all"
   // affordance. Clears any previously-rendered groups/buttons first so re-filtering is idempotent.
-  const renderList = (list: Unit[]): void => {
+  const renderList = (list: Unit[], expand: boolean): void => {
     root.querySelectorAll(".file-group, .render-all-btn").forEach((el) => el.remove());
 
     const fileCountIn = (file: string) => list.filter((u) => u.file === file).length;
@@ -112,7 +125,7 @@ export function renderFiringSites(
           curFile = u.file;
           fileEl = document.createElement("details");
           fileEl.className = "file-group";
-          (fileEl as HTMLDetailsElement).open = true;
+          (fileEl as HTMLDetailsElement).open = expand;
           const h = document.createElement("summary");
           h.className = "file-name";
           const path = document.createElement("code");
@@ -169,7 +182,9 @@ export function renderFiringSites(
     }
   };
 
-  // Full render, then re-filter on each keystroke against the precomputed units.
+  // Full render, then re-filter on each keystroke against the precomputed units. With no filter the
+  // file groups render collapsed (74 expanded groups is a wall of code on load); a filter expands
+  // the matching groups so the hits are visible without a second click.
   const apply = (query: string): void => {
     const q = query.trim().toLowerCase();
     onQueryChange?.(query);
@@ -179,8 +194,8 @@ export function renderFiringSites(
     } else {
       updateSummary(Math.min(units.length, BLOCK_CAP), units.length, "context block");
     }
-    renderList(list);
-    toggleAll.textContent = "Collapse all";
+    renderList(list, q !== "");
+    toggleAll.textContent = q ? "Collapse all" : "Expand all";
   };
 
   filter.addEventListener("input", () => apply(filter.value));

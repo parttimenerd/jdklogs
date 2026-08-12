@@ -47,6 +47,15 @@ const state: State = {
 
 const PANEL_IDS = ["tab-sites", "tab-summary", "tab-coverage", "tab-log"];
 
+// One-line "what am I looking at" caption shown under the tab bar for the active panel. Newcomers
+// can't predict what "JFR coverage" or "Summary" hold from the label alone; this names each tab's job.
+const TAB_INTROS: Record<string, string> = {
+  "tab-sites": "Every OpenJDK log statement your selector switches on, grouped by source file.",
+  "tab-summary": "Warnings about your selector plus an estimated log volume for the selected GC.",
+  "tab-coverage": "Which of these log lines a JFR event can replace — and the .jfc to record them instead.",
+  "tab-log": "A real captured log for this selector, from a Renaissance benchmark run.",
+};
+
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
 async function loadData(version: string): Promise<void> {
@@ -175,7 +184,8 @@ function renderPanel(panelId: string): void {
       $("#tab-sites"), state.data, fires, state.gc,
       state.sitesQuery,
       (q) => { state.sitesQuery = q; writeUrlState(state); },
-      blockLinkFor
+      blockLinkFor,
+      (cfg) => setConfig(cfg)
     );
     rendered.sites = true;
   } else if (panelId === "tab-summary" && !rendered.summary) {
@@ -276,6 +286,8 @@ function activateTab(panelId: string): void {
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
   tab.classList.add("active");
   $("#" + panelId).classList.add("active");
+  const intro = document.querySelector<HTMLElement>("#tab-intro");
+  if (intro) intro.textContent = TAB_INTROS[panelId] ?? "";
   renderPanel(panelId);
   if (panelId === "tab-log" && logSearch && state.data) {
     logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc]);
@@ -417,7 +429,7 @@ async function main(): Promise<void> {
 
   $("#wizard-toggle").addEventListener("click", () => {
     $("#wizard").classList.toggle("open");
-    $("#wizard-toggle").textContent = $("#wizard").classList.contains("open") ? "Hide tag wizard" : "Show tag wizard";
+    $("#wizard-toggle").textContent = $("#wizard").classList.contains("open") ? "Hide logging categories" : "Browse logging categories";
   });
 
   setupAutocomplete();
@@ -442,6 +454,9 @@ async function main(): Promise<void> {
     requestAnimationFrame(() => {
       const target = document.getElementById("block-" + deepLinkBlock);
       if (target) {
+        // File groups render collapsed by default; open the one containing the deep-linked block so
+        // it can actually be scrolled into view (a closed <details> hides its content from layout).
+        target.closest("details.file-group")?.setAttribute("open", "");
         target.scrollIntoView({ block: "center" });
         target.classList.add("block-flash");
         setTimeout(() => target.classList.remove("block-flash"), 1500);

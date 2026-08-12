@@ -105,6 +105,7 @@ details.wiz-group[open] > .wiz-group-head::before { content: "▾"; }
 .tabs { display: flex; gap: 4px; padding: 8px 24px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .tab { padding: 8px 14px; border: none; background: none; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); }
 .tab.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-intro { margin: 0; padding: 8px 24px 0; color: var(--muted); font-size: 12.5px; max-width: 820px; }
 
 .layout { padding: 16px 24px; max-width: 1100px; }
 .tab-panel { display: none; }
@@ -248,6 +249,11 @@ a.evt-line:hover { text-decoration: underline; color: var(--accent); }
 .count-val { font-weight: 600; }
 
 .note { color: var(--muted); padding: 12px; font-style: italic; }
+.empty-state { font-style: normal; }
+.empty-state p { margin: 0 0 6px; }
+.empty-hint { color: var(--muted); }
+.empty-ex { color: var(--accent); cursor: pointer; font-family: ui-monospace, monospace; }
+.empty-ex:hover { text-decoration: underline; }
 .site-footer { padding: 16px 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
 
 @media (max-width: 900px) { .config-wrap { min-width: 100%; } .snippet { font-size: 12px; } }

@@ -26,6 +26,13 @@ async function openBucket(page: Page, bucket: "covered" | "partial" | "uncovered
   await page.locator(`.cov-summary span[data-bucket="${bucket}"]`).click();
 }
 
+// File groups render collapsed by default; open them so block content is laid out/visible.
+async function openAllFileGroups(page: Page) {
+  await page.locator(".file-group").evaluateAll((els) =>
+    els.forEach((el) => ((el as HTMLDetailsElement).open = true))
+  );
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".results-header")).toBeVisible();
@@ -40,6 +47,7 @@ test("gc*=info shows firing sites grouped by file with a GitHub permalink", asyn
     /github\.com\/openjdk\/jdk\/blob\/[0-9a-f]{40}\/src\/hotspot\/.+#L\d+-L\d+/
   );
   // firing lines are highlighted
+  await openAllFileGroups(page);
   await expect(page.locator(".code-line.firing").first()).toBeVisible();
 });
 
@@ -103,6 +111,7 @@ test("sample log lines have the wall-clock ISO timestamp stripped", async ({ pag
 
 test("each firing site has an examples disclosure with an approximate lines/hour rate", async ({ page }) => {
   await setConfig(page, "gc*=info");
+  await openAllFileGroups(page);
   const details = page.locator("#tab-sites details.examples");
   await expect(details.first()).toBeVisible();
   // At least one block has captured example lines + a lines/hour estimate from the benchmark run.
@@ -113,6 +122,7 @@ test("each firing site has an examples disclosure with an approximate lines/hour
 
 test("the Sites tab shows no JFR-event links (JFR info lives only in the coverage tab)", async ({ page }) => {
   await setConfig(page, "gc*=debug");
+  await openAllFileGroups(page);
   await expect(page.locator("#tab-sites .block").first()).toBeVisible();
   await expect(page.locator("#tab-sites a.jfr-link")).toHaveCount(0);
 });
@@ -284,34 +294,35 @@ test("GC selector hides other collectors' gc/<collector>/ source files", async (
   expect(await g1Dir()).toBe(0);
 });
 
-test("Collapse all button folds and unfolds every file group", async ({ page }) => {
+test("Expand all button unfolds and refolds every file group", async ({ page }) => {
   await setConfig(page, "gc*=trace");
   const btn = page.locator(".collapse-all-btn");
-  await expect(btn).toHaveText("Collapse all");
+  // With no sites-filter active, file groups render collapsed by default.
+  await expect(btn).toHaveText("Expand all");
   const openCount = () =>
     page.evaluate(() => document.querySelectorAll(".file-group[open]").length);
   const total = () => page.evaluate(() => document.querySelectorAll(".file-group").length);
-  expect(await openCount()).toBe(await total());
-
-  await btn.click();
-  await expect(btn).toHaveText("Expand all");
   expect(await openCount()).toBe(0);
 
   await btn.click();
   await expect(btn).toHaveText("Collapse all");
   expect(await openCount()).toBe(await total());
+
+  await btn.click();
+  await expect(btn).toHaveText("Expand all");
+  expect(await openCount()).toBe(0);
 });
 
 test("Copy button gives 'Copied!' feedback without changing the config", async ({ page }) => {
   await setConfig(page, "gc*=info");
   const btn = page.locator("#config-copy");
-  await expect(btn).toHaveText("Copy");
+  await expect(btn).toHaveText("Copy -Xlog");
   await btn.click();
   await expect(btn).toHaveText("Copied!");
   // the config text itself is untouched by copying
   await expect(page.locator("#config")).toHaveValue("gc*=info");
   // label reverts after the timeout
-  await expect(btn).toHaveText("Copy");
+  await expect(btn).toHaveText("Copy -Xlog");
 });
 
 test("Copy link button gives 'Copied!' feedback", async ({ page }) => {
@@ -439,6 +450,9 @@ test("the Sites filter query persists in the hash and is prefilled on reload", a
 
 test("block 'Link' button copies a link, and navigating to #b=<id> scrolls the block into view", async ({ page }) => {
   await setConfig(page, "gc*=info");
+  // File groups render collapsed by default; open the first so its blocks (and their Link button)
+  // are laid out and interactive.
+  await page.locator(".file-group").first().evaluate((el) => ((el as HTMLDetailsElement).open = true));
   const linkBtn = page.locator(".block-link-btn").first();
   await expect(linkBtn).toBeVisible();
   await expect(linkBtn).toHaveText("Link");
@@ -482,5 +496,26 @@ test("header meta line shows a data-provenance segment linking to the source com
 test("version selector lists the versions detected at startup (head is always present)", async ({ page }) => {
   const options = page.locator("#version option");
   await expect(options.filter({ hasText: /^head$/ })).toHaveCount(1);
+});
+
+test("empty results state offers a clickable example that repopulates the sites", async ({ page }) => {
+  // A selector that matches nothing (valid syntax, real tag, but no sites at this level/gc).
+  await setConfig(page, "jfr=off");
+  const empty = page.locator(".empty-state");
+  await expect(empty).toContainText("No log sites fire");
+  const ex = empty.locator(".empty-ex");
+  await expect(ex).toHaveText("gc*=info");
+  await ex.click();
+  await expect(page.locator("#config")).toHaveValue("gc*=info");
+  await expect(page.locator(".results-header")).toContainText("firing site(s)");
+});
+
+test("each tab shows a one-line intro describing what it holds", async ({ page }) => {
+  const intro = page.locator("#tab-intro");
+  await expect(intro).toContainText("log statement");
+  await page.locator('.tab[data-panel="tab-coverage"]').click();
+  await expect(intro).toContainText("JFR event");
+  await page.locator('.tab[data-panel="tab-sites"]').click();
+  await expect(intro).toContainText("source file");
 });
 

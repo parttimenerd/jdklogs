@@ -42,13 +42,13 @@
                  placeholder="e.g. gc*=info,heap*=debug" />
           <div id="autocomplete" class="autocomplete"></div>
         </div>
-        <button id="config-copy" type="button" class="icon-btn" title="Copy -Xlog config">Copy</button>
-        <button id="share-link" type="button" class="icon-btn" title="Copy shareable link">Copy link</button>
-        <button id="wizard-toggle" type="button">Show tag wizard</button>
+        <button id="config-copy" type="button" class="icon-btn" title="Copy this -Xlog config to the clipboard">Copy -Xlog</button>
+        <button id="share-link" type="button" class="icon-btn" title="Copy a shareable link to this view">Copy link</button>
+        <button id="wizard-toggle" type="button">Browse logging categories</button>
       </div>
       <div id="error" class="error"></div>
       <div class="level-legend">
-        <span>Levels:</span>
+        <span>Level colors:</span>
         <span class="chip lvl-trace">trace</span>
         <span class="chip lvl-debug">debug</span>
         <span class="chip lvl-info">info</span>
@@ -65,6 +65,7 @@
       <button class="tab" data-panel="tab-coverage" id="tab-coverage-btn">JFR coverage</button>
       <button class="tab" data-panel="tab-log">Sample log</button>
     </nav>
+    <p id="tab-intro" class="tab-intro"></p>
 
     <main class="layout">
       <div id="tab-sites" class="tab-panel active"></div>
