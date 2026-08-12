@@ -3553,5 +3553,56 @@
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javaexceptionthrow",
     "kind": "partial",
     "coverageNote": "jdk.JavaExceptionThrow carries thrownClass (class name); the 'thrown in' method corresponds to stackTrace.topFrame; message-less variant, partial because the JFR event fires at a different granularity (bytecode-level throw) and adds stackTrace not in this log format"
+  },
+  {
+    "file": "src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp",
+    "function": "HeapWord* ParallelScavengeHeap::mem_allocate_work(size_t size, bool is_tlab)",
+    "logLine": "ParallelScavengeHeap::mem_allocate retries %d times, size=%zu",
+    "jfrEvent": "jdk.AllocationRequiringGC",
+    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#allocationrequiringgc",
+    "kind": "partial",
+    "coverageNote": "jdk.AllocationRequiringGC records the allocation size that triggered a GC (overlapping the size reported here), but not the retry count or the mem_allocate retry loop itself.",
+    "relatedEvents": [
+      "jdk.GarbageCollection"
+    ]
+  },
+  {
+    "file": "src/hotspot/os/bsd/os_bsd.cpp",
+    "function": "void os::jfr_report_memory_info()",
+    "logLine": "Error fetching RSS values: task_info failed",
+    "jfrEvent": "jdk.ResidentSetSize",
+    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#residentsetsize",
+    "kind": "partial",
+    "coverageNote": "This warning is the failure branch of the exact call site that commits jdk.ResidentSetSize; the event carries the process RSS size/peak this function would otherwise report, but fires only on successful fetch."
+  },
+  {
+    "file": "src/hotspot/os/linux/os_linux.cpp",
+    "function": "void os::jfr_report_memory_info()",
+    "logLine": "Error fetching RSS values: query_process_memory_info failed",
+    "jfrEvent": "jdk.ResidentSetSize",
+    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#residentsetsize",
+    "kind": "partial",
+    "coverageNote": "This warning is the failure branch of the exact call site that commits jdk.ResidentSetSize; the event carries the process RSS size/peak this function would otherwise report, but fires only on successful fetch."
+  },
+  {
+    "file": "src/hotspot/os/windows/os_windows.cpp",
+    "function": "void os::jfr_report_memory_info()",
+    "logLine": "Error fetching RSS values: GetProcessMemoryInfo failed",
+    "jfrEvent": "jdk.ResidentSetSize",
+    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#residentsetsize",
+    "kind": "partial",
+    "coverageNote": "This warning is the failure branch of the exact call site that commits jdk.ResidentSetSize; the event carries the process RSS size/peak this function would otherwise report, but fires only on successful fetch."
+  },
+  {
+    "file": "src/hotspot/share/jfr/periodic/sampling/jfrCPUTimeThreadSampler.cpp",
+    "function": "void JfrCPUTimeThreadSampling::send_event(const JfrTicks &start_time, traceid sid, traceid tid, Tickspan cpu_time_period, bool biased)",
+    "logLine": "CPU thread sampler sent %zu events, lost %d, biased %zu\n",
+    "jfrEvent": "jdk.CPUTimeSamplesLost",
+    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#cputimesampleslost",
+    "kind": "partial",
+    "coverageNote": "The aggregate lost-sample count maps to jdk.CPUTimeSamplesLost.lostSamples, and the sent/biased counts are captured per-sample by jdk.CPUTimeSample; the log line is a running summary of those events.",
+    "relatedEvents": [
+      "jdk.CPUTimeSample"
+    ]
   }
 ]
