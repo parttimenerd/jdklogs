@@ -541,3 +541,18 @@ test("each tab shows a one-line intro describing what it holds", async ({ page }
   await expect(intro).toContainText("source file");
 });
 
+test("level chip filter narrows the Sites list and composes with text filter", async ({ page }) => {
+  await setConfig(page, "gc*=info");
+  await expect(page.locator(".results-header")).toContainText("firing site(s)");
+  // a chip row is present with the five levels; clicking "info" keeps only info sites
+  const infoChip = page.locator(".chip-filter[data-level='info']");
+  await expect(infoChip).toBeVisible();
+  await infoChip.click();
+  await expect(infoChip).toHaveClass(/active/);
+  // at least one file group still renders (info sites exist for gc*=info)
+  await expect(page.locator(".file-group").first()).toBeVisible();
+  // clicking again clears the level filter
+  await infoChip.click();
+  await expect(infoChip).not.toHaveClass(/active/);
+});
+

@@ -121,9 +121,34 @@ export function renderFiringSites(
   };
   buildUnits();
 
+  // Chip filters: click a level to narrow the list without typing. Composes (AND) with the text
+  // filter. Levels are the fixed five; we render only those with at least one firing site so a user
+  // isn't offered a dead filter.
+  const activeLevels = new Set<string>();
+  const chipRow = document.createElement("div");
+  chipRow.className = "chip-filter-row";
+  const presentLevels = new Set(fires.map((s) => s.level));
+  for (const lvl of ["trace", "debug", "info", "warning", "error"]) {
+    if (!presentLevels.has(lvl as SiteJson["level"])) continue;
+    const c = document.createElement("button");
+    c.type = "button";
+    c.className = "chip-filter lvl-" + lvl;
+    c.dataset.level = lvl;
+    c.textContent = lvl;
+    c.addEventListener("click", () => {
+      if (activeLevels.has(lvl)) { activeLevels.delete(lvl); c.classList.remove("active"); }
+      else { activeLevels.add(lvl); c.classList.add("active"); }
+      apply(filter.value);
+    });
+    chipRow.appendChild(c);
+  }
+  if (chipRow.children.length > 0) root.insertBefore(chipRow, root.children[1] ?? null);
+
   // A unit matches the filter if its file path, or ANY of its block-sites' message / level / tags,
   // contain the query (case-insensitive) — so a tag or message hit keeps the whole context block.
   const matchUnit = (u: Unit, q: string): boolean => {
+    if (activeLevels.size > 0 && !u.blockSites.some((s) => activeLevels.has(s.level))) return false;
+    if (!q) return true;
     if (u.file.toLowerCase().includes(q)) return true;
     return u.blockSites.some(
       (s) =>
@@ -211,14 +236,15 @@ export function renderFiringSites(
   const apply = (query: string): void => {
     const q = query.trim().toLowerCase();
     onQueryChange?.(query);
-    const list = q ? units.filter((u) => matchUnit(u, q)) : units;
-    if (q) {
-      summary.textContent = `${list.length} of ${units.length} context blocks match "${query}"`;
+    const filtering = q !== "" || activeLevels.size > 0;
+    const list = filtering ? units.filter((u) => matchUnit(u, q)) : units;
+    if (filtering) {
+      summary.textContent = `${list.length} of ${units.length} context blocks match`;
     } else {
       updateSummary(Math.min(units.length, BLOCK_CAP), units.length, "context block");
     }
-    renderList(list, q !== "");
-    toggleAll.textContent = q ? "Collapse all" : "Expand all";
+    renderList(list, filtering);
+    toggleAll.textContent = filtering ? "Collapse all" : "Expand all";
   };
 
   filter.addEventListener("input", () => apply(filter.value));
