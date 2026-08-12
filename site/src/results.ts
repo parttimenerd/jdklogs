@@ -80,6 +80,15 @@ export function renderFiringSites(
     toggleAll.textContent = anyOpen ? "Expand all" : "Collapse all";
   });
   header.appendChild(toggleAll);
+
+  // Sort order for the file groups: by firing-site count (busiest first, the default — highest signal
+  // on top) or alphabetically by path. A small toggle so a user hunting a known file can switch.
+  let sortByCount = true;
+  const sortBtn = document.createElement("button");
+  sortBtn.type = "button";
+  sortBtn.className = "collapse-all-btn";
+  sortBtn.textContent = "Sort: most sites";
+  header.appendChild(sortBtn);
   root.appendChild(header);
 
   const byFile = new Map<string, SiteJson[]>();
@@ -92,15 +101,25 @@ export function renderFiringSites(
   // Flatten to (file, representative-site, block-sites) render units, deduped by blockId, so we can
   // cap on blocks rather than files (a single file may hold dozens of distinct context blocks).
   interface Unit { file: string; rep: SiteJson; blockSites: SiteJson[]; }
-  const units: Unit[] = [];
-  for (const [file, sites] of [...byFile.entries()].sort()) {
-    const seen = new Set<string>();
-    for (const s of sites) {
-      if (seen.has(s.blockId)) continue;
-      seen.add(s.blockId);
-      units.push({ file, rep: s, blockSites: sites.filter((x) => x.blockId === s.blockId) });
+  let units: Unit[] = [];
+  const buildUnits = (): void => {
+    units = [];
+    const fileEntries = [...byFile.entries()];
+    fileEntries.sort(
+      sortByCount
+        ? (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])
+        : (a, b) => a[0].localeCompare(b[0])
+    );
+    for (const [file, sites] of fileEntries) {
+      const seen = new Set<string>();
+      for (const s of sites) {
+        if (seen.has(s.blockId)) continue;
+        seen.add(s.blockId);
+        units.push({ file, rep: s, blockSites: sites.filter((x) => x.blockId === s.blockId) });
+      }
     }
-  }
+  };
+  buildUnits();
 
   // A unit matches the filter if its file path, or ANY of its block-sites' message / level / tags,
   // contain the query (case-insensitive) — so a tag or message hit keeps the whole context block.
@@ -203,6 +222,12 @@ export function renderFiringSites(
   };
 
   filter.addEventListener("input", () => apply(filter.value));
+  sortBtn.addEventListener("click", () => {
+    sortByCount = !sortByCount;
+    sortBtn.textContent = sortByCount ? "Sort: most sites" : "Sort: A–Z";
+    buildUnits();
+    apply(filter.value);
+  });
   filter.value = initialQuery;
   apply(initialQuery);
 }
