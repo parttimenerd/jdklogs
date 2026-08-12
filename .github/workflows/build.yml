@@ -158,9 +158,11 @@ jobs:
 
       - run: npm ci
 
-      # Fast, self-contained unit tests (no JVM, no external data): reverse index + .jfc builder.
+      # Fast, self-contained unit tests (no JVM, no external data): reverse index + .jfc builder
+      # + cross-version presence/badge logic.
       - run: npm run test:reverse
       - run: npm run test:jfc
+      - run: npm run test:versions
 
       # The e2e suite builds + previews the site (see playwright.config webServer) and drives it in
       # a real browser, so it needs the chromium binary. Install only chromium (the sole project).

@@ -158,9 +158,9 @@ details.wiz-group[open] > .wiz-group-head::before { content: "▾"; }
 .chip-filter { font-size: 11px; padding: 3px 10px; border-radius: 12px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-family: ui-monospace, monospace; opacity: .6; }
 .chip-filter:hover { opacity: 1; }
 .chip-filter.active { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37, 99, 235, .15); }
-.chip.lvl-trace { background: #ede9fe; } .chip.lvl-debug { background: #dbeafe; }
-.chip.lvl-info { background: #dcfce7; } .chip.lvl-warning { background: #fef3c7; }
-.chip.lvl-error { background: #fee2e2; }
+.chip.lvl-trace, .chip-filter.lvl-trace { background: #ede9fe; } .chip.lvl-debug, .chip-filter.lvl-debug { background: #dbeafe; }
+.chip.lvl-info, .chip-filter.lvl-info { background: #dcfce7; } .chip.lvl-warning, .chip-filter.lvl-warning { background: #fef3c7; }
+.chip.lvl-error, .chip-filter.lvl-error { background: #fee2e2; }
 .jfr-link { padding: 2px 6px; border: 1px solid var(--accent); border-radius: 4px; }
 
 .snippet { margin: 0; padding: 8px 0; font-size: 12.5px; overflow-x: auto; background: #fff; }
