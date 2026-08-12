@@ -21,9 +21,9 @@ code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .site-header { padding: 20px 24px 8px; }
 .site-header h1 { margin: 0; font-size: 24px; }
 .tagline { margin: 4px 0 0; color: var(--muted); max-width: 720px; }
-.site-note { margin: 6px 0 0; color: var(--muted); font-size: 12px; max-width: 720px; }
-.site-note a { color: var(--accent); text-decoration: none; }
-.site-note a:hover { text-decoration: underline; }
+.site-meta { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.site-meta a { color: var(--accent); text-decoration: none; }
+.site-meta a:hover { text-decoration: underline; }
 
 .controls { padding: 12px 24px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 10; }
 .config-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -248,9 +248,5 @@ a.evt-line:hover { text-decoration: underline; color: var(--accent); }
 
 .note { color: var(--muted); padding: 12px; font-style: italic; }
 .site-footer { padding: 16px 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
-.data-provenance { margin: 0 0 8px; }
-.data-provenance:empty { display: none; }
-.data-provenance a { color: var(--accent); text-decoration: none; }
-.data-provenance a:hover { text-decoration: underline; }
 
 @media (max-width: 900px) { .config-wrap { min-width: 100%; } .snippet { font-size: 12px; } }
