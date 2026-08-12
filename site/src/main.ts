@@ -89,6 +89,15 @@ async function detectVersions(): Promise<string[]> {
   return present.length > 0 ? present : ["head"];
 }
 
+/** One-line "showing <GC> · <platform>" context under the tab bar, so a user understands why some
+ *  OS/collector-specific sites are hidden. Called whenever gc/platform changes. */
+function renderSelectorContext(): void {
+  const el = document.querySelector<HTMLElement>("#selector-context");
+  if (!el) return;
+  const plat = PLATFORMS.find((p) => p.value === state.platform)?.label ?? state.platform;
+  el.textContent = `Showing ${state.gc} · ${plat} — sites for other collectors/platforms are hidden.`;
+}
+
 /** Fills the right-aligned data-freshness segment of the header meta line: which OpenJDK commit the
  *  data was scanned from, and when. Rendered as "data <date> from <repo> @ <sha>", with the SHA
  *  linking to the commit. Cleared if the fields are absent (older data). */
@@ -401,6 +410,7 @@ async function main(): Promise<void> {
     writeUrlState(state);
     updateWizardAvailability();
     rerender();
+    renderSelectorContext();
     if ($("#tab-log").classList.contains("active") && logSearch && state.data)
       logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc]);
   });
@@ -416,6 +426,7 @@ async function main(): Promise<void> {
     writeUrlState(state);
     updateWizardAvailability();
     rerender();
+    renderSelectorContext();
   });
 
   await loadData(state.version);
@@ -462,6 +473,20 @@ async function main(): Promise<void> {
   setupCopyButtons();
   setupConfigHint();
 
+  // First-visit hint: show once, remember dismissal in localStorage. Wrapped in try/catch because
+  // localStorage can throw in private-mode/sandboxed contexts — a hint must never break the app.
+  try {
+    const hint = document.querySelector<HTMLElement>("#first-hint");
+    const dismissed = localStorage.getItem("jdklogs-hint-dismissed") === "1";
+    if (hint && !dismissed) {
+      hint.hidden = false;
+      document.querySelector<HTMLElement>("#first-hint-dismiss")?.addEventListener("click", () => {
+        hint.hidden = true;
+        try { localStorage.setItem("jdklogs-hint-dismissed", "1"); } catch { /* ignore */ }
+      });
+    }
+  } catch { /* localStorage unavailable — skip the hint */ }
+
   const input = $("#config") as HTMLInputElement;
   input.value = state.config;
   wizard.syncFromConfig(state.config);
@@ -471,6 +496,7 @@ async function main(): Promise<void> {
   recompute();
   rendered.sites = rendered.summary = rendered.coverage = false;
   activateTab(state.tab);
+  renderSelectorContext();
 
   // Version-specific labeling: after the selected version has painted, fetch every OTHER present
   // version's JSON in parallel, build the presence map, and re-render the Sites tab so badges appear.

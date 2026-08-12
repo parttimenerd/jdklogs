@@ -564,3 +564,7 @@ test("config validity cue reflects parse state", async ({ page }) => {
   await expect(cue).toHaveAttribute("data-state", "err");
 });
 
+test("selector context line reflects the GC selector", async ({ page }) => {
+  await expect(page.locator("#selector-context")).toContainText("Showing G1");
+});
+

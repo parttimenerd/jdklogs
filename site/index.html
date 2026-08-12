@@ -73,6 +73,12 @@
       <button class="tab" data-panel="tab-log">Sample log</button>
     </nav>
     <p id="tab-intro" class="tab-intro"></p>
+    <p id="first-hint" class="first-hint" hidden>
+      New here? Type an <code>-Xlog</code> selector (or use "Browse logging categories") to see which
+      OpenJDK log statements fire, their source, and the JFR events that replace them.
+      <button id="first-hint-dismiss" type="button" class="first-hint-x" aria-label="Dismiss">×</button>
+    </p>
+    <p id="selector-context" class="selector-context"></p>
 
     <main class="layout">
       <div id="tab-sites" class="tab-panel active"></div>
