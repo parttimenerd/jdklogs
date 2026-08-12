@@ -146,6 +146,7 @@ details.wiz-group[open] > .wiz-group-head::before { content: "▾"; }
 .block-flash { animation: block-flash 1.5s ease-out; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
 .chip { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #e5e7eb; font-family: ui-monospace, monospace; }
+.ver-badge { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: #fef3c7; color: #92400e; font-weight: 600; margin-left: 4px; white-space: nowrap; }
 .chip.lvl-trace { background: #ede9fe; } .chip.lvl-debug { background: #dbeafe; }
 .chip.lvl-info { background: #dcfce7; } .chip.lvl-warning { background: #fef3c7; }
 .chip.lvl-error { background: #fee2e2; }

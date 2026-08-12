@@ -7,6 +7,8 @@ import "prismjs/components/prism-c";
 import "prismjs/components/prism-cpp";
 import { Block, ghUrl, SiteJson, VersionData, VolumeStats } from "./types";
 import { copyToClipboard } from "./clipboard";
+import { Presence, versionBadge } from "./versions";
+import { mappingKey } from "./coverage";
 
 /**
  * Tab 1: firing sites grouped by file. Each block is one context snippet (sites in the same block
@@ -28,7 +30,9 @@ export function renderFiringSites(
   initialQuery = "",
   onQueryChange?: (q: string) => void,
   blockLinkFor?: (blockId: string) => string,
-  onExample?: (cfg: string) => void
+  onExample?: (cfg: string) => void,
+  presence?: Presence | null,
+  versions?: string[]
 ): void {
   root.innerHTML = "";
   if (fires.length === 0) {
@@ -143,7 +147,7 @@ export function renderFiringSites(
           fileEl.appendChild(h);
           root.appendChild(fileEl);
         }
-        fileEl!.appendChild(renderBlock(data, u.rep.blockId, data.blocks[u.rep.blockId], u.rep, u.blockSites, gc, blockLinkFor));
+        fileEl!.appendChild(renderBlock(data, u.rep.blockId, data.blocks[u.rep.blockId], u.rep, u.blockSites, gc, blockLinkFor, presence, versions));
       }
     };
 
@@ -210,7 +214,9 @@ function renderBlock(
   rep: SiteJson,
   blockSites: SiteJson[],
   gc: string,
-  blockLinkFor?: (blockId: string) => string
+  blockLinkFor?: (blockId: string) => string,
+  presence?: Presence | null,
+  versions?: string[]
 ): HTMLElement {
   const blockEl = document.createElement("div");
   blockEl.className = "block";
@@ -261,6 +267,22 @@ function renderBlock(
     chips.appendChild(c);
   }
   meta.appendChild(chips);
+
+  // Version-specific badge: mark blocks whose representative site is NOT present in every offered JDK
+  // version (e.g. "new in head", "removed", "21 only"). Silent when uniform or when only one version
+  // is offered — the common case, so no badge noise. presence is built after first paint (main.ts).
+  if (presence && versions && versions.length > 1) {
+    const key = mappingKey(rep.file, rep.funcSignature, rep.formatString);
+    const inV = presence.get(key);
+    const label = inV ? versionBadge(inV, versions) : null;
+    if (label) {
+      const vb = document.createElement("span");
+      vb.className = "ver-badge";
+      vb.textContent = label;
+      vb.title = "This log statement is not present in every offered JDK version.";
+      meta.appendChild(vb);
+    }
+  }
   blockEl.appendChild(meta);
 
   blockEl.appendChild(renderSnippet(block, blockSites, gc));

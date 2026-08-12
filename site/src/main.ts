@@ -190,7 +190,9 @@ function renderPanel(panelId: string): void {
       state.sitesQuery,
       (q) => { state.sitesQuery = q; writeUrlState(state); },
       blockLinkFor,
-      (cfg) => setConfig(cfg)
+      (cfg) => setConfig(cfg),
+      presence,
+      VERSIONS
     );
     rendered.sites = true;
   } else if (panelId === "tab-summary" && !rendered.summary) {
