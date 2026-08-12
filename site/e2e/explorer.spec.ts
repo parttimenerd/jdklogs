@@ -263,6 +263,9 @@ test("wizard groups tags by their main tag, collapsed by default", async ({ page
 
 test("a shared URL hash restores version, gc, and config", async ({ page }) => {
   await page.goto("/#v=head&gc=ZGC&xlog=gc*%3Ddebug");
+  // Wait until the hash is actually committed to the document before reloading — otherwise the
+  // reload can race the navigation and land on an empty hash, dropping us onto the G1 default.
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain("gc=ZGC");
   await page.reload();
   await expect(page.locator(".results-header")).toBeVisible();
   await expect(page.locator("#gc")).toHaveValue("ZGC");
