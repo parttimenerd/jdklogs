@@ -16,6 +16,7 @@ import { highlightConfig } from "./highlight-config";
 import { readUrlState, writeUrlState } from "./url-state";
 import { copyToClipboard } from "./clipboard";
 import { PLATFORMS, filterByPlatform, filterByGc } from "./platform";
+import { buildPresence, Presence } from "./versions";
 
 const DATA_BASE = "./data/";
 // Candidate versions we may ship (head = openjdk/jdk master; LTS lines by number). Which ones are
@@ -113,6 +114,10 @@ let logSearch: LogSearch | null = null;
 // Tags with at least one log site for the current gc/platform. Shared by the wizard (grey-out) and
 // the autocomplete dropdown (dead-tag signal); recomputed in updateWizardAvailability().
 let availableTags: Set<string> | null = null;
+
+// Cross-version site presence, built after first paint from ALL present versions' JSON. Null until
+// built (and stays effectively empty when only one version is present — see versionBadge()).
+let presence: Presence | null = null;
 
 // Current derived results, recomputed on config/gc/version change and consumed lazily per tab. Only
 // the active tab is rendered on each change; the others are marked dirty and rendered when shown —
@@ -454,6 +459,24 @@ async function main(): Promise<void> {
   recompute();
   rendered.sites = rendered.summary = rendered.coverage = false;
   activateTab(state.tab);
+
+  // Version-specific labeling: after the selected version has painted, fetch every OTHER present
+  // version's JSON in parallel, build the presence map, and re-render the Sites tab so badges appear.
+  // With only one present version this is a no-op the user never sees. 404s can't happen (we only
+  // fetch detected versions), but guard anyway so a transient failure never blanks the site.
+  if (VERSIONS.length > 1 && state.data) {
+    const others = VERSIONS.filter((v) => v !== state.version);
+    Promise.all(
+      others.map((v) =>
+        fetch(`${DATA_BASE}${v}.json`).then((r) => (r.ok ? (r.json() as Promise<VersionData>) : null)).catch(() => null)
+      )
+    ).then((loaded) => {
+      const datas = [state.data!, ...loaded.filter((d): d is VersionData => d !== null)];
+      presence = buildPresence(datas, VERSIONS);
+      rendered.sites = false;           // invalidate so badges render on next paint
+      renderPanel(activePanelId());
+    });
+  }
 
   // Deep-link to a specific firing block: force the Sites tab, scroll it into view, and flash it.
   // Defer to the next frame so the just-rendered block list is laid out before we measure/scroll.
