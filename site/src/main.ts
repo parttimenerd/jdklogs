@@ -79,9 +79,9 @@ async function detectVersions(): Promise<string[]> {
   return present.length > 0 ? present : ["head"];
 }
 
-/** Appends the data-freshness metadata to the header meta line: which OpenJDK commit the data was
- *  scanned from, and when. Rendered as " · data <date> @ <sha>" after the attribution links, with
- *  the SHA linking to the commit. Cleared if the fields are absent (older data). */
+/** Fills the right-aligned data-freshness segment of the header meta line: which OpenJDK commit the
+ *  data was scanned from, and when. Rendered as "data <date> from <repo> @ <sha>", with the SHA
+ *  linking to the commit. Cleared if the fields are absent (older data). */
 function renderProvenance(): void {
   const el = document.querySelector<HTMLElement>("#data-provenance");
   if (!el || !state.data) return;
@@ -90,7 +90,7 @@ function renderProvenance(): void {
   if (!generatedAt || !commitSha || !repo) return;
   const date = new Date(generatedAt).toISOString().slice(0, 10); // UTC, locale-free
   const short = commitSha.slice(0, 7);
-  el.appendChild(document.createTextNode(` · data ${date} from ${repo} @ `));
+  el.appendChild(document.createTextNode(`data ${date} from ${repo} @ `));
   const a = document.createElement("a");
   a.href = `https://github.com/${repo}/commit/${commitSha}`;
   a.target = "_blank";

@@ -21,7 +21,8 @@ code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .site-header { padding: 20px 24px 8px; }
 .site-header h1 { margin: 0; font-size: 24px; }
 .tagline { margin: 4px 0 0; color: var(--muted); max-width: 720px; }
-.site-meta { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.site-meta { margin: 6px 0 0; color: var(--muted); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+.site-meta #data-provenance { margin-left: auto; }
 .site-meta a { color: var(--accent); text-decoration: none; }
 .site-meta a:hover { text-decoration: underline; }
 
