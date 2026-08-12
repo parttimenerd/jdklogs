@@ -126,6 +126,15 @@ interface Derived { fires: SiteJson[]; warnings: Warning[]; vol: ReturnType<type
 let derived: Derived | null = null;
 const rendered = { sites: false, summary: false, coverage: false };
 
+/** Update the compact ✓/✗ cue next to the config input: "ok" (parses + all tags known) or "err". */
+function setValidityCue(ok: boolean): void {
+  const el = document.querySelector<HTMLElement>("#config-valid");
+  if (!el) return;
+  el.dataset.state = ok ? "ok" : "err";
+  el.textContent = ok ? "✓" : "✗";
+  el.title = ok ? "Selector parses and all tags are known" : "Selector has a syntax error or unknown tag";
+}
+
 function recompute(): void {
   if (!state.data || !state.tags) return;
   const errBox = $("#error");
@@ -164,6 +173,7 @@ function recompute(): void {
 
   const btn = document.querySelector<HTMLElement>("#tab-summary-btn");
   if (btn) btn.textContent = warnings.length > 0 ? `Summary · ${warnings.length}` : "Summary";
+  setValidityCue(!errBox.classList.contains("show"));
 }
 
 function activePanelId(): string {

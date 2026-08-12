@@ -556,3 +556,11 @@ test("level chip filter narrows the Sites list and composes with text filter", a
   await expect(infoChip).not.toHaveClass(/active/);
 });
 
+test("config validity cue reflects parse state", async ({ page }) => {
+  const cue = page.locator("#config-valid");
+  await setConfig(page, "gc*=info");
+  await expect(cue).toHaveAttribute("data-state", "ok");
+  await setConfig(page, "gc==info");
+  await expect(cue).toHaveAttribute("data-state", "err");
+});
+

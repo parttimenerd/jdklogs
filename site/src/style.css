@@ -72,6 +72,9 @@ code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .autocomplete.show { display: block; }
 .ac-item { padding: 6px 10px; cursor: pointer; display: flex; gap: 10px; align-items: baseline; }
 .ac-item.active, .ac-item:hover { background: #eff4ff; }
+.config-valid { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 13px; font-weight: 700; pointer-events: none; }
+.config-valid[data-state="ok"] { color: #16a34a; }
+.config-valid[data-state="err"] { color: #dc2626; }
 .ac-item.ac-dead { opacity: .55; }
 .ac-text { font-family: ui-monospace, monospace; font-weight: 600; }
 .ac-detail { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
