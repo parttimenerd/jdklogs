@@ -5,7 +5,11 @@
     "logLine": "Loaded library %s, handle",
     "jfrEvent": "jdk.NativeLibrary",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativelibrary",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.NativeLibrary is a periodic snapshot of loaded libraries (name + address range), not a load-action event; the dynamic load operation is captured by jdk.NativeLibraryLoad.",
+    "relatedEvents": [
+      "jdk.NativeLibraryLoad"
+    ]
   },
   {
     "file": "src/hotspot/os/aix/os_aix.cpp",
@@ -29,7 +33,8 @@
     "logLine": "attempting shared library load of %s",
     "jfrEvent": "jdk.NativeLibraryLoad",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativelibraryload",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log fires pre-load (intent); jdk.NativeLibraryLoad fires post-load (outcome) — different moments, event carries name/success/errorMessage not pre-load intent."
   },
   {
     "file": "src/hotspot/os/aix/os_aix.cpp",
@@ -37,7 +42,8 @@
     "logLine": "uname says: sysname \"%s\" version \"%s\" release \"%s\" node \"%s\" machine \"%s\"",
     "jfrEvent": "jdk.OSInformation",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#osinformation",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.OSInformation carries a single osVersion string, not the individual parsed uname fields (sysname/release/node/machine separately)."
   },
   {
     "file": "src/hotspot/os/aix/os_aix.cpp",
@@ -45,7 +51,11 @@
     "logLine": "Thread \"%s\" started (pthread id: %zu, attributes: %s).",
     "jfrEvent": "jdk.ThreadStart",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#threadstart",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.ThreadStart has eventThread but no fields for pthread id or thread creation attributes — those data are not captured in the event.",
+    "relatedEvents": [
+      "jdk.ThreadStart"
+    ]
   },
   {
     "file": "src/hotspot/os/bsd/os_bsd.cpp",
@@ -53,7 +63,8 @@
     "logLine": "attempting shared library load of %s",
     "jfrEvent": "jdk.NativeLibraryLoad",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativelibraryload",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log fires pre-load (intent); jdk.NativeLibraryLoad fires post-load (outcome) — different moments, event carries name/success/errorMessage not pre-load intent."
   },
   {
     "file": "src/hotspot/os/bsd/os_bsd.cpp",
@@ -104,28 +115,16 @@
     "kind": "exact"
   },
   {
-    "file": "src/hotspot/os/bsd/os_bsd.cpp",
-    "function": "void os::jfr_report_memory_info()",
-    "logLine": "Error fetching RSS values: task_info failed",
-    "jfrEvent": "jdk.ResidentSetSize",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#residentsetsize",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/os/linux/cgroupSubsystem_linux.cpp",
-    "function": "bool CgroupSubsystem::active_processor_count(int (*cpu_bound_func)(), double& value)",
-    "logLine": "CgroupSubsystem::active_processor_count (cached): %.2f",
-    "jfrEvent": "jdk.CPUInformation",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#cpuinformation",
-    "kind": "exact"
-  },
-  {
     "file": "src/hotspot/os/linux/cgroupUtil_linux.cpp",
     "function": "bool CgroupUtil::processor_count(CgroupCpuController* cpu_ctrl, double upper_bound, double& value)",
     "logLine": "CPU Quota based on quota/period: %.2f",
     "jfrEvent": "jdk.ContainerCPUThrottling",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containercputhrottling",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.ContainerCPUThrottling records throttling stats (elapsed/throttled slices, throttled time), not the quota/period ratio; jdk.ContainerConfiguration carries cpuQuota and cpuSlicePeriod fields.",
+    "relatedEvents": [
+      "jdk.ContainerConfiguration"
+    ]
   },
   {
     "file": "src/hotspot/os/linux/cgroupV1Subsystem_linux.cpp",
@@ -165,15 +164,11 @@
     "logLine": "RSS usage is:",
     "jfrEvent": "jdk.ContainerMemoryUsage",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containermemoryusage",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/os/linux/cgroupV1Subsystem_linux.cpp",
-    "function": "bool CgroupV1MemoryController::cache_usage_in_bytes(physical_memory_size_type& result)",
-    "logLine": "Cache usage is:",
-    "jfrEvent": "jdk.ContainerMemoryUsage",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containermemoryusage",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.ContainerMemoryUsage has memoryUsage (total usage_in_bytes = rss+cache) and swapMemoryUsage, but no dedicated RSS-only field; cgroup v1 rss ≠ total memoryUsage.",
+    "relatedEvents": [
+      "jdk.ContainerMemoryUsage"
+    ]
   },
   {
     "file": "src/hotspot/os/linux/cgroupV2Subsystem_linux.cpp",
@@ -181,7 +176,11 @@
     "logLine": "CPU Quota is: %d",
     "jfrEvent": "jdk.ContainerCPUThrottling",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containercputhrottling",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.ContainerCPUThrottling records throttling stats (elapsed/throttled slices, throttled time), not the quota config value; jdk.ContainerConfiguration has cpuQuota.",
+    "relatedEvents": [
+      "jdk.ContainerConfiguration"
+    ]
   },
   {
     "file": "src/hotspot/os/linux/cgroupV2Subsystem_linux.cpp",
@@ -189,7 +188,11 @@
     "logLine": "CPU Period is: %d",
     "jfrEvent": "jdk.ContainerCPUThrottling",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containercputhrottling",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.ContainerCPUThrottling has no cpuPeriod field; jdk.ContainerConfiguration has cpuSlicePeriod.",
+    "relatedEvents": [
+      "jdk.ContainerConfiguration"
+    ]
   },
   {
     "file": "src/hotspot/os/linux/cgroupV2Subsystem_linux.cpp",
@@ -221,7 +224,8 @@
     "logLine": "Scaled CPU shares value is: %d",
     "jfrEvent": "jdk.ContainerConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containerconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.ContainerConfiguration stores raw cpuShares, not the derived scaled value; the scaled intermediate is an internal computation with no corresponding JFR field."
   },
   {
     "file": "src/hotspot/os/linux/cgroupV2Subsystem_linux.cpp",
@@ -229,15 +233,11 @@
     "logLine": "RSS usage is:",
     "jfrEvent": "jdk.ContainerMemoryUsage",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containermemoryusage",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/os/linux/cgroupV2Subsystem_linux.cpp",
-    "function": "bool CgroupV2MemoryController::cache_usage_in_bytes(physical_memory_size_type& value)",
-    "logLine": "Cache usage is:",
-    "jfrEvent": "jdk.ContainerMemoryUsage",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#containermemoryusage",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.ContainerMemoryUsage has memoryUsage (total usage, rss+anon) and swapMemoryUsage but no dedicated RSS-only field.",
+    "relatedEvents": [
+      "jdk.ContainerMemoryUsage"
+    ]
   },
   {
     "file": "src/hotspot/os/linux/os_linux.cpp",
@@ -261,7 +261,8 @@
     "logLine": "attempting shared library load of %s",
     "jfrEvent": "jdk.NativeLibraryLoad",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativelibraryload",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log fires pre-load (intent); jdk.NativeLibraryLoad fires post-load (outcome) — different moments, event carries name/success/errorMessage not pre-load intent."
   },
   {
     "file": "src/hotspot/os/linux/os_linux.cpp",
@@ -301,15 +302,8 @@
     "logLine": "available memory:",
     "jfrEvent": "jdk.PhysicalMemory",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#physicalmemory",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/os/linux/os_linux.cpp",
-    "function": "void os::jfr_report_memory_info()",
-    "logLine": "Error fetching RSS values: query_process_memory_info failed",
-    "jfrEvent": "jdk.ResidentSetSize",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#residentsetsize",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.PhysicalMemory has totalSize and usedSize, but no availableSize field; available memory must be inferred as totalSize-usedSize rather than read directly."
   },
   {
     "file": "src/hotspot/os/linux/os_linux.cpp",
@@ -317,7 +311,11 @@
     "logLine": "os::free_swap_space: containerized value unavailable returning host value:",
     "jfrEvent": "jdk.SwapSpace",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#swapspace",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.SwapSpace has freeSize but no field to indicate whether the value is from container or host; the fallback-to-host distinction in this log line is not captured.",
+    "relatedEvents": [
+      "jdk.SwapSpace"
+    ]
   },
   {
     "file": "src/hotspot/os/posix/os_posix.cpp",
@@ -365,7 +363,8 @@
     "logLine": "attempting shared library load of %s",
     "jfrEvent": "jdk.NativeLibraryLoad",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#nativelibraryload",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log fires pre-load (intent); jdk.NativeLibraryLoad fires post-load (outcome) — different moments, event carries name/success/errorMessage not pre-load intent."
   },
   {
     "file": "src/hotspot/os/windows/os_windows.cpp",
@@ -385,19 +384,15 @@
   },
   {
     "file": "src/hotspot/os/windows/os_windows.cpp",
-    "function": "void os::jfr_report_memory_info()",
-    "logLine": "Error fetching RSS values: GetProcessMemoryInfo failed",
-    "jfrEvent": "jdk.ResidentSetSize",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#residentsetsize",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/os/windows/os_windows.cpp",
     "function": "bool os::create_main_thread(JavaThread* thread)",
     "logLine": "Thread \"%s\" started (tid: %u, attributes: %s)",
     "jfrEvent": "jdk.ThreadStart",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#threadstart",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.ThreadStart has eventThread but no fields for OS thread id (tid) or thread creation attributes — those data are not captured in the event.",
+    "relatedEvents": [
+      "jdk.ThreadStart"
+    ]
   },
   {
     "file": "src/hotspot/os/windows/perfMemory_windows.cpp",
@@ -469,7 +464,11 @@
     "logLine": "ReservedCodeCache size %zuK changed to total segments size NonNMethod %zuK NonProfiled %zuK Profiled %zuK Hot %zuK = %zuK",
     "jfrEvent": "jdk.CodeCacheConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#codecacheconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.CodeCacheConfiguration has nonNMethodSize, nonProfiledSize, profiledSize, reservedSize but no 'Hot' segment field; the log line references 5 distinct heap segments while the event only models 4.",
+    "relatedEvents": [
+      "jdk.CodeCacheStatistics"
+    ]
   },
   {
     "file": "src/hotspot/share/code/codeCache.cpp",
@@ -477,7 +476,11 @@
     "logLine": "Initializing code heaps ReservedCodeCache %zuK NonNMethod %zuK NonProfiled %zuK Profiled %zuK Hot %zuK",
     "jfrEvent": "jdk.CodeCacheConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#codecacheconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Same gap: jdk.CodeCacheConfiguration lacks a 'Hot' segment field; log line's 5-segment breakdown cannot be fully reconstructed from the event.",
+    "relatedEvents": [
+      "jdk.CodeCacheStatistics"
+    ]
   },
   {
     "file": "src/hotspot/share/code/codeCache.cpp",
@@ -501,7 +504,8 @@
     "logLine": "EpsilonMaxTLABSize < MinTLABSize, adjusting it to %zu",
     "jfrEvent": "jdk.GCTLABConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gctlabconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "GCTLABConfiguration reports minTLABSize and tlabRefillWasteLimit but has no maxTLABSize field; the adjusted-to value is only inferrable, not explicitly recorded."
   },
   {
     "file": "src/hotspot/share/gc/epsilon/epsilonHeap.cpp",
@@ -509,7 +513,11 @@
     "logLine": "Heap: %zu%s reserved, %zu%s (%.2f%%) committed, %zu%s (%.2f%%) used",
     "jfrEvent": "jdk.GCHeapMemoryUsage",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcheapmemoryusage",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "GCHeapMemoryUsage has used/committed/max but no 'reserved' field; reserved virtual address space is distinct from max heap size.",
+    "relatedEvents": [
+      "jdk.GCHeapSummary"
+    ]
   },
   {
     "file": "src/hotspot/share/gc/epsilon/epsilonHeap.cpp",
@@ -525,7 +533,11 @@
     "logLine": "TLAB size for \"%s\" (Requested: %zuK, Min: %zuK, Max: %zuK, Ergo: %zuK) -> %zuK",
     "jfrEvent": "jdk.ObjectAllocationInNewTLAB",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#objectallocationinnewtlab",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "ObjectAllocationInNewTLAB records allocationSize and tlabSize (final size) but has no fields for the requested/min/max/ergo breakdown this log line prints.",
+    "relatedEvents": [
+      "jdk.GCTLABConfiguration"
+    ]
   },
   {
     "file": "src/hotspot/share/gc/g1/g1CollectedHeap.cpp",
@@ -541,15 +553,8 @@
     "logLine": "Allocated %u survivor %u old percent total %1.2f%% (%u%%)",
     "jfrEvent": "jdk.G1EvacuationYoungStatistics",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1evacuationyoungstatistics",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/share/gc/g1/g1ConcurrentMark.cpp",
-    "function": "void G1ConcurrentMark::concurrent_cycle_end(bool mark_cycle_completed)",
-    "logLine": "Concurrent Mark Abort",
-    "jfrEvent": "jdk.ConcurrentModeFailure",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#concurrentmodefailure",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "G1EvacuationYoungStatistics reports byte-amount totals (allocated/wasted/used) via the G1EvacuationStatistics struct; it does not carry per-space region counts or the percentage breakdown this log line prints."
   },
   {
     "file": "src/hotspot/share/gc/g1/g1ConcurrentMark.cpp",
@@ -565,7 +570,8 @@
     "logLine": "ConcGCThreads: %u offset %u",
     "jfrEvent": "jdk.GCConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "GCConfiguration has concurrentGCThreads but no 'offset' field; the scheduling offset for concurrent GC threads is not captured."
   },
   {
     "file": "src/hotspot/share/gc/g1/g1ConcurrentMarkThread.cpp",
@@ -573,14 +579,6 @@
     "logLine": "Concurrent Mark %.3fms",
     "jfrEvent": "jdk.GCPhaseConcurrent",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcphaseconcurrent",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/share/gc/g1/g1EvacStats.cpp",
-    "function": "void G1EvacStats::log_plab_allocation()",
-    "logLine": "%s PLAB allocation: allocated: %zuB, wasted: %zuB, unused: %zuB, used: %zuB, undo waste: %zuB,",
-    "jfrEvent": "jdk.PromoteObjectInNewPLAB",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#promoteobjectinnewplab",
     "kind": "exact"
   },
   {
@@ -597,7 +595,11 @@
     "logLine": "G1HR %4u %s(%s) [, , ]",
     "jfrEvent": "jdk.G1HeapRegionInformation",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapregioninformation",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "G1HeapRegionInformation has index/type/start/used but lacks the subtype field (the inner %s) and the end/top address bounds shown in the log format.",
+    "relatedEvents": [
+      "jdk.G1HeapRegionTypeChange"
+    ]
   },
   {
     "file": "src/hotspot/share/gc/g1/g1HeapTransition.cpp",
@@ -605,7 +607,8 @@
     "logLine": "Old regions: %zu->%zu",
     "jfrEvent": "jdk.G1HeapSummary",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapsummary",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "G1HeapSummary has oldGenUsedSize (bytes) and a total numberOfRegions count, but no per-space before/after old-region-count fields; this log line's before→after old region count is not directly encoded."
   },
   {
     "file": "src/hotspot/share/gc/g1/g1HeapTransition.cpp",
@@ -613,7 +616,8 @@
     "logLine": "Humongous regions: %zu->%zu",
     "jfrEvent": "jdk.G1HeapSummary",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1heapsummary",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "G1HeapSummary has no humongous region count field at all; the before/after humongous region count this log line prints cannot be reconstructed from the event."
   },
   {
     "file": "src/hotspot/share/gc/g1/g1IHOPControl.cpp",
@@ -621,7 +625,8 @@
     "logLine": "Adaptive IHOP information (value update), old-gen threshold: %zuB (%1.2f%%), internal target occupancy: %zuB, old-gen occupancy: %zuB (%1.2f%%), additional buffer size: %zuB, current non-humongous allocation: %zuB, current peak extra humongous occupancy: %zuB, predicted old-gen non-humongous allocation rate: %1.2fB/s, predicted peak extra humongous occupancy: %1.2fB, predicted concurrent cycle duration: %1.2fms",
     "jfrEvent": "jdk.G1AdaptiveIHOP",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1adaptiveihop",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "G1AdaptiveIHOP covers most fields but lacks 'current non-humongous allocation', 'current peak extra humongous occupancy', and 'predicted peak extra humongous occupancy' that appear in the log line."
   },
   {
     "file": "src/hotspot/share/gc/g1/g1IHOPControl.cpp",
@@ -637,7 +642,8 @@
     "logLine": "Target occupancy update: old: %zuB, new: %zuB",
     "jfrEvent": "jdk.G1BasicIHOP",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#g1basicihop",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "G1BasicIHOP has only the current targetOccupancy; there is no 'previous/old target occupancy' field, so the before→after transition this log line prints cannot be reconstructed."
   },
   {
     "file": "src/hotspot/share/gc/g1/g1MMUTracker.cpp",
@@ -661,7 +667,11 @@
     "logLine": "Adaptive tenuring threshold %u -> %u (max %u, young gen state: %s, increase count: %u/%u)",
     "jfrEvent": "jdk.GCSurvivorConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcsurvivorconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "GCSurvivorConfiguration has only maxTenuringThreshold and initialTenuringThreshold (static config); it lacks the dynamic before→after threshold transition, young-gen state string, and increase-count fields this log line prints.",
+    "relatedEvents": [
+      "jdk.TenuringDistribution"
+    ]
   },
   {
     "file": "src/hotspot/share/gc/parallel/psOldGen.cpp",
@@ -669,7 +679,8 @@
     "logLine": "AdaptiveSizePolicy::old generation size: used: %zu capacity %zu -> %zu gen limits: %zu / %zu",
     "jfrEvent": "jdk.PSHeapSummary",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#psheapsummary",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "PSHeapSummary is a heap snapshot (old/young/eden/from/to spaces); it does not record a before→after capacity transition or the generation size limits this adaptive resize log line prints."
   },
   {
     "file": "src/hotspot/share/gc/parallel/psParallelCompact.cpp",
@@ -701,7 +712,8 @@
     "logLine": "Young generation size: desired eden: %zu survivor: %zu used: %zu capacity: %zu gen limits: %zu / %zu",
     "jfrEvent": "jdk.PSHeapSummary",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#psheapsummary",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "PSHeapSummary records current heap space measurements; the 'desired eden/survivor' values and 'gen limits' this log line prints are adaptive sizing parameters not present as named fields in the event."
   },
   {
     "file": "src/hotspot/share/gc/parallel/psYoungGen.cpp",
@@ -709,7 +721,8 @@
     "logLine": "AdaptiveSizePolicy::survivor sizes: (%zu, %zu) -> (%zu, %zu)",
     "jfrEvent": "jdk.PSHeapSummary",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#psheapsummary",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "PSHeapSummary is a point-in-time heap snapshot; it cannot express the before→after survivor size pair transition this log line records."
   },
   {
     "file": "src/hotspot/share/gc/serial/defNewGeneration.cpp",
@@ -733,7 +746,11 @@
     "logLine": "Desired survivor size %zu bytes, new threshold %zu (max threshold %u)",
     "jfrEvent": "jdk.TenuringDistribution",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#tenuringdistribution",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "TenuringDistribution records per-age-cohort object sizes; the desired survivor size and the newly computed tenuring threshold (with max) are not fields of TenuringDistribution.",
+    "relatedEvents": [
+      "jdk.GCSurvivorConfiguration"
+    ]
   },
   {
     "file": "src/hotspot/share/gc/shared/gcArguments.cpp",
@@ -789,7 +806,8 @@
     "logLine": "1: Minimum young %zu  Initial young %zu  Maximum young %zu",
     "jfrEvent": "jdk.YoungGenerationConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#younggenerationconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "YoungGenerationConfiguration has minSize and maxSize but no initialSize field; the initial young generation size this log line prints is not captured."
   },
   {
     "file": "src/hotspot/share/gc/shared/genArguments.cpp",
@@ -797,7 +815,8 @@
     "logLine": "2: Minimum young %zu  Initial young %zu  Maximum young %zu",
     "jfrEvent": "jdk.YoungGenerationConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#younggenerationconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "YoungGenerationConfiguration has minSize and maxSize but no initialSize field; the initial young generation size this log line prints is not captured."
   },
   {
     "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahHeuristics.hpp",
@@ -821,7 +840,8 @@
     "logLine": "New tenuring threshold %zu (min %zu, max %zu)",
     "jfrEvent": "jdk.GCSurvivorConfiguration",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gcsurvivorconfiguration",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "GCSurvivorConfiguration records only maxTenuringThreshold and initialTenuringThreshold as static config; it lacks the dynamically updated 'new' threshold and the min bound this log line prints."
   },
   {
     "file": "src/hotspot/share/gc/shenandoah/shenandoahController.cpp",
@@ -845,7 +865,8 @@
     "logLine": "Completed GC (%s): %s, %s, cancelled: %s",
     "jfrEvent": "jdk.GarbageCollection",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#garbagecollection",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "GarbageCollection has name/cause/sumOfPauses/longestPause but no 'cancelled' boolean/string field; the cancellation status this log line explicitly prints is absent from the event."
   },
   {
     "file": "src/hotspot/share/gc/shenandoah/shenandoahHeapRegion.cpp",
@@ -861,15 +882,8 @@
     "logLine": "Setting affiliation of Region %zu from %s to %s, top: , TAMS: , watermark: , top_bitmap:",
     "jfrEvent": "jdk.ShenandoahHeapRegionStateChange",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#shenandoahheapregionstatechange",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp",
-    "function": "void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg)",
-    "logLine": "At end of %s: GCU: %.1f%%, MU: %.1f%% during period of %.3fs",
-    "jfrEvent": "jdk.GCCPUTime",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#gccputime",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "ShenandoahHeapRegionStateChange captures index/from/to/start/used but lacks top, TAMS, watermark, and top_bitmap address fields that this log line prints."
   },
   {
     "file": "src/hotspot/share/gc/shenandoah/shenandoahReferenceProcessor.cpp",
@@ -901,15 +915,8 @@
     "logLine": "Using tenuring threshold: %d (%s)",
     "jfrEvent": "jdk.ZYoungGarbageCollection",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zyounggarbagecollection",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/share/gc/z/zHeap.cpp",
-    "function": "void ZHeap::account_undo_alloc_page(ZPage* page)",
-    "logLine": "Undo page allocation, thread:  (%s), page: , size: %zu",
-    "jfrEvent": "jdk.ZPageAllocation",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zpageallocation",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "ZYoungGarbageCollection has tenuringThreshold (the integer) but no field for the description/reason string (%s) this log line also prints."
   },
   {
     "file": "src/hotspot/share/gc/z/zPageAllocator.cpp",
@@ -925,7 +932,8 @@
     "logLine": "Relocation Set (%s Pages): %d->%d, %d skipped, %zu forwarding entries",
     "jfrEvent": "jdk.ZRelocationSetGroup",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zrelocationsetgroup",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "ZRelocationSetGroup has type/candidatePages/selectedPages/total/relocate bytes but no fields for skipped-page count or forwarding-entry count."
   },
   {
     "file": "src/hotspot/share/gc/z/zRelocationSetSelector.cpp",
@@ -933,7 +941,8 @@
     "logLine": "Candidate Relocation Set (%s Pages): %d->%d, %.1f%% relative defragmentation, %zu forwarding entries, %s, live %d",
     "jfrEvent": "jdk.ZRelocationSetGroup",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zrelocationsetgroup",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "ZRelocationSetGroup has type and page/byte counts but lacks defragmentation percentage, forwarding entry count, status string, and live-page count."
   },
   {
     "file": "src/hotspot/share/gc/z/zStat.cpp",
@@ -965,7 +974,8 @@
     "logLine": "Uncommitter (%u) Uncommitted: %zuM(%.0f%%) in %.3fms",
     "jfrEvent": "jdk.ZUncommit",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#zuncommit",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "ZUncommit has uncommitted (size) and duration but no thread-count (%u) or percentage (%.0f%%) fields."
   },
   {
     "file": "src/hotspot/share/jfr/periodic/jfrRedactedEvents.cpp",
@@ -981,7 +991,8 @@
     "logLine": "Redacted argument in initial environment variable value named '%s'",
     "jfrEvent": "jdk.InitialEnvironmentVariable",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#initialenvironmentvariable",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.InitialEnvironmentVariable only has key+value; the log indicates argument-level redaction within a value string, which has no dedicated field in the event — only the key (variable name) is recoverable."
   },
   {
     "file": "src/hotspot/share/jfr/periodic/jfrRedactedEvents.cpp",
@@ -1005,15 +1016,8 @@
     "logLine": "Measured CPU usage for %d threads in %.3f milliseconds",
     "jfrEvent": "jdk.ThreadCPULoad",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#threadcpuload",
-    "kind": "exact"
-  },
-  {
-    "file": "src/hotspot/share/jfr/periodic/sampling/jfrCPUTimeThreadSampler.cpp",
-    "function": "void JfrCPUTimeThreadSampling::send_event(const JfrTicks &start_time, traceid sid, traceid tid, Tickspan cpu_time_period, bool biased)",
-    "logLine": "CPU thread sampler sent %zu events, lost %d, biased %zu",
-    "jfrEvent": "jdk.ThreadCPULoad",
-    "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#threadcpuload",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log line is internal measurement overhead diagnostics (thread count + measurement duration in ms); jdk.ThreadCPULoad carries per-thread user/system percentages but has no thread-count or measurement-time fields."
   },
   {
     "file": "src/hotspot/share/jfr/periodic/sampling/jfrThreadSampler.cpp",
@@ -1021,7 +1025,11 @@
     "logLine": "JFR thread sampling done in %3.7f secs with %d java %d native samples",
     "jfrEvent": "jdk.ExecutionSample",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#executionsample",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log line is aggregate sampling-run diagnostics (elapsed time, java count, native count); jdk.ExecutionSample is a per-sample event with no aggregate counters or elapsed-time field.",
+    "relatedEvents": [
+      "jdk.NativeMethodSample"
+    ]
   },
   {
     "file": "src/hotspot/share/memory/classLoaderMetaspace.cpp",
@@ -1053,7 +1061,11 @@
     "logLine": "Linked class %s",
     "jfrEvent": "jdk.ClassLoad",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classload",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log fires in link_class_impl (the linking phase); jdk.ClassLoad captures the load trigger, not the link-completion step — no jdk.ClassLink event exists in JFR.",
+    "relatedEvents": [
+      "jdk.ClassLoad"
+    ]
   },
   {
     "file": "src/hotspot/share/oops/instanceKlass.cpp",
@@ -1117,7 +1129,11 @@
     "logLine": "vm_op: all=  prologue=  doit=",
     "jfrEvent": "jdk.RedefineClasses",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#redefineclasses",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log captures the timing breakdown of the VM operation (all/prologue/doit sub-phases); jdk.RedefineClasses has only classCount + total duration, not the sub-phase timings.",
+    "relatedEvents": [
+      "jdk.ClassRedefinition"
+    ]
   },
   {
     "file": "src/hotspot/share/runtime/handshake.cpp",
@@ -1125,7 +1141,8 @@
     "logLine": "Handshake \"%s\", Targeted threads: %d, Executed by requesting thread: %d, Total completion time:  ns%s%s",
     "jfrEvent": "jdk.ExecuteVMOperation",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#executevmoperation",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Handshakes are distinct from VM operations; jdk.ExecuteVMOperation lacks targeted-thread count and requesting-thread execution count fields. No dedicated JFR event captures handshake completion statistics."
   },
   {
     "file": "src/hotspot/share/runtime/javaThread.cpp",
@@ -1141,7 +1158,8 @@
     "logLine": "deflate_monitor: object=, mark=, type='%s'",
     "jfrEvent": "jdk.JavaMonitorDeflate",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javamonitordeflate",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.JavaMonitorDeflate carries monitorClass (covers type) and address, but the mark word logged in the source has no corresponding field in the event."
   },
   {
     "file": "src/hotspot/share/runtime/os.cpp",
@@ -1149,7 +1167,8 @@
     "logLine": "Initial active processor count set to %d",
     "jfrEvent": "jdk.CPUInformation",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#cpuinformation",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.CPUInformation has sockets/cores/hwThreads but no 'active processor count' field; the JVM-internal active count (which may differ from hwThreads after JVM-level capping) is not modeled."
   },
   {
     "file": "src/hotspot/share/runtime/safepoint.cpp",
@@ -1157,7 +1176,11 @@
     "logLine": "Suspending GC threads",
     "jfrEvent": "jdk.SafepointBegin",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointbegin",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.SafepointBegin fires at the start of the safepoint, not specifically at the 'suspending GC threads' sub-phase; the event has no field distinguishing this phase marker from the broader begin.",
+    "relatedEvents": [
+      "jdk.SafepointBegin"
+    ]
   },
   {
     "file": "src/hotspot/share/runtime/safepoint.cpp",
@@ -1165,7 +1188,11 @@
     "logLine": "Blocking threads from starting/exiting",
     "jfrEvent": "jdk.SafepointBegin",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointbegin",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Same as above: another sub-phase log inside SafepointSynchronize::begin(); jdk.SafepointBegin covers the whole begin phase but carries no per-sub-phase field.",
+    "relatedEvents": [
+      "jdk.SafepointBegin"
+    ]
   },
   {
     "file": "src/hotspot/share/runtime/safepoint.cpp",
@@ -1181,7 +1208,11 @@
     "logLine": "Disarming safepoint",
     "jfrEvent": "jdk.SafepointEnd",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointend",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Logged at the start of SafepointSynchronize::end() before the safepoint is actually ended; jdk.SafepointEnd commits at completion of the full end phase and carries no 'disarming' sub-phase field.",
+    "relatedEvents": [
+      "jdk.SafepointEnd"
+    ]
   },
   {
     "file": "src/hotspot/share/runtime/safepoint.cpp",
@@ -1189,7 +1220,11 @@
     "logLine": "Resuming GC threads",
     "jfrEvent": "jdk.SafepointEnd",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointend",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Another sub-phase marker within SafepointSynchronize::end(); jdk.SafepointEnd covers the whole end phase without a per-sub-phase field for GC thread resumption.",
+    "relatedEvents": [
+      "jdk.SafepointEnd"
+    ]
   },
   {
     "file": "src/hotspot/share/runtime/safepoint.cpp",
@@ -1197,7 +1232,13 @@
     "logLine": "Safepoint \"%s\", Time since last:  ns, Reaching safepoint:  ns, At safepoint:  ns, Leaving safepoint:  ns, Total:  ns, Threads: %d runnable, %d total",
     "jfrEvent": "jdk.SafepointLatency",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#safepointlatency",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Mapped to jdk.SafepointLatency but that event is per-thread async-interrupt latency (threadState + stackTrace), not the aggregate safepoint timing summary. No single JFR event captures all five timing phases plus thread counts in this log line.",
+    "relatedEvents": [
+      "jdk.SafepointBegin",
+      "jdk.SafepointEnd",
+      "jdk.SafepointStateSynchronization"
+    ]
   },
   {
     "file": "src/hotspot/share/runtime/safepoint.cpp",
@@ -1221,7 +1262,8 @@
     "logLine": "inflate: object=, mark=, type='%s' cause=%s",
     "jfrEvent": "jdk.JavaMonitorInflate",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javamonitorinflate",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.JavaMonitorInflate carries monitorClass (type) and cause — both present in the log — but the mark word is logged in source and absent from the JFR event."
   },
   {
     "file": "src/hotspot/share/runtime/threads.cpp",
@@ -1237,7 +1279,11 @@
     "logLine": "Adding VM operation: %s",
     "jfrEvent": "jdk.ExecuteVMOperation",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#executevmoperation",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "Log fires at enqueue time in VMThread::set_next_operation(); jdk.ExecuteVMOperation fires at execution time and covers execution duration, not the enqueue moment. Operation name is in both, but timing semantics differ.",
+    "relatedEvents": [
+      "jdk.ExecuteVMOperation"
+    ]
   },
   {
     "file": "src/hotspot/share/services/finalizerService.cpp",
@@ -1245,7 +1291,8 @@
     "logLine": "Finalizer was run for object () of class %s",
     "jfrEvent": "jdk.FinalizerStatistics",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#finalizerstatistics",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.FinalizerStatistics is a periodic per-class aggregate (objects on heap + totalFinalizersRun); the log tracks individual finalizer-run events, which have no dedicated per-invocation JFR event."
   },
   {
     "file": "src/hotspot/share/services/finalizerService.cpp",
@@ -1253,7 +1300,8 @@
     "logLine": "Registered object () of class %s as finalizable",
     "jfrEvent": "jdk.FinalizerStatistics",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#finalizerstatistics",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.FinalizerStatistics is a periodic aggregate of finalizable objects on heap; there is no per-registration JFR event — the log captures individual object registration."
   },
   {
     "file": "src/hotspot/share/services/heapDumper.cpp",
@@ -1261,7 +1309,11 @@
     "logLine": "Error %s while dumping heap",
     "jfrEvent": "jdk.HeapDump",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#heapdump",
-    "kind": "exact"
+    "kind": "partial",
+    "coverageNote": "jdk.HeapDump is emitted only on successful dump completion (oracle description: 'successfully written'); the error path has no corresponding JFR event field.",
+    "relatedEvents": [
+      "jdk.HeapDump"
+    ]
   },
   {
     "file": "src/hotspot/share/utilities/exceptions.cpp",
@@ -1928,7 +1980,7 @@
     "jfrEvent": "jdk.StringTableStatistics",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#stringtablestatistics",
     "kind": "partial",
-    "coverageNote": "The log line prints the string table's live load factor (entryCount/bucketCount) during concurrent maintenance work. jdk.StringTableStatistics carries entryCount, bucketCount, bucketCountAverage, insertionRate, and removalRate \u2014 from which the live factor is directly computable (entryCount/bucketCount). However, StringTableStatistics fires periodically, not at the same moment as this do_concurrent_work call, so the mapping is partial/different-granularity."
+    "coverageNote": "The log line prints the string table's live load factor (entryCount/bucketCount) during concurrent maintenance work. jdk.StringTableStatistics carries entryCount, bucketCount, bucketCountAverage, insertionRate, and removalRate — from which the live factor is directly computable (entryCount/bucketCount). However, StringTableStatistics fires periodically, not at the same moment as this do_concurrent_work call, so the mapping is partial/different-granularity."
   },
   {
     "file": "src/hotspot/share/classfile/symbolTable.cpp",
@@ -1937,7 +1989,7 @@
     "jfrEvent": "jdk.SymbolTableStatistics",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#symboltablestatistics",
     "kind": "partial",
-    "coverageNote": "The log line prints the symbol table's live load factor (entryCount/bucketCount) during concurrent maintenance work. jdk.SymbolTableStatistics carries entryCount, bucketCount, bucketCountAverage, insertionRate, and removalRate \u2014 from which the live factor is directly computable (entryCount/bucketCount). However, SymbolTableStatistics fires periodically, not at the same moment as this do_concurrent_work call, so the mapping is partial/different-granularity."
+    "coverageNote": "The log line prints the symbol table's live load factor (entryCount/bucketCount) during concurrent maintenance work. jdk.SymbolTableStatistics carries entryCount, bucketCount, bucketCountAverage, insertionRate, and removalRate — from which the live factor is directly computable (entryCount/bucketCount). However, SymbolTableStatistics fires periodically, not at the same moment as this do_concurrent_work call, so the mapping is partial/different-granularity."
   },
   {
     "file": "src/hotspot/share/gc/epsilon/epsilonInitLogger.cpp",
@@ -1955,7 +2007,7 @@
     "jfrEvent": "jdk.AllocationRequiringGC",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#allocationrequiringgc",
     "kind": "partial",
-    "coverageNote": "Same reasoning as the attempt_allocation_slow counterpart: jdk.AllocationRequiringGC carries eventThread (thread name) and size (allocation bytes \u2248 word_size \u00d7 HeapWordSize) on the same humongous allocation trigger path. The log fires after collection scheduling failure; AllocationRequiringGC fires earlier. The allocation word count is recoverable but not the scheduling-failure outcome."
+    "coverageNote": "Same reasoning as the attempt_allocation_slow counterpart: jdk.AllocationRequiringGC carries eventThread (thread name) and size (allocation bytes ≈ word_size × HeapWordSize) on the same humongous allocation trigger path. The log fires after collection scheduling failure; AllocationRequiringGC fires earlier. The allocation word count is recoverable but not the scheduling-failure outcome."
   },
   {
     "file": "src/hotspot/share/gc/g1/g1CollectedHeap.cpp",
@@ -2942,7 +2994,7 @@
     "jfrEvent": "jdk.ShenandoahEvacuationInformation",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#shenandoahevacuationinformation",
     "kind": "partial",
-    "coverageNote": "jdk.ShenandoahEvacuationInformation.regionsPromotedHumongous and regionsPromotedRegular directly correspond to the two region counts logged here. The 'total used bytes' partially aligns with cSetUsedBefore (collection set used before evacuation). However, the log fires at planning time (complete_planning(), before evacuation begins), while ShenandoahEvacuationInformation fires after evacuation completes \u2014 different moment/granularity, so exact is not warranted."
+    "coverageNote": "jdk.ShenandoahEvacuationInformation.regionsPromotedHumongous and regionsPromotedRegular directly correspond to the two region counts logged here. The 'total used bytes' partially aligns with cSetUsedBefore (collection set used before evacuation). However, the log fires at planning time (complete_planning(), before evacuation begins), while ShenandoahEvacuationInformation fires after evacuation completes — different moment/granularity, so exact is not warranted."
   },
   {
     "file": "src/hotspot/share/gc/shenandoah/shenandoahInitLogger.cpp",
@@ -3071,7 +3123,7 @@
     "jfrEvent": "jdk.DataLoss",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#dataloss",
     "kind": "partial",
-    "coverageNote": "jdk.DataLoss.amount carries the bytes discarded when JFR drops full buffers, corresponding to the byte count printed here. The buffer count is not in jdk.DataLoss. This log fires in the same discard operation that generates jdk.DataLoss (same log_discard() function body), but jdk.DataLoss only carries byte amount and cumulative total \u2014 coverage is partial."
+    "coverageNote": "jdk.DataLoss.amount carries the bytes discarded when JFR drops full buffers, corresponding to the byte count printed here. The buffer count is not in jdk.DataLoss. This log fires in the same discard operation that generates jdk.DataLoss (same log_discard() function body), but jdk.DataLoss only carries byte amount and cumulative total — coverage is partial."
   },
   {
     "file": "src/hotspot/share/jfr/recorder/storage/jfrStorage.cpp",
@@ -3137,7 +3189,7 @@
     "relatedEvents": [
       "jdk.MetaspaceAllocationFailure"
     ],
-    "coverageNote": "jdk.MetaspaceOOM fires when a metaspace allocation definitively fails with OOM; jdk.MetaspaceAllocationFailure fires on allocation failure. This log site fires earlier \u2014 when a critical allocation request is queued into the global list (before the OOM is thrown). The OOM path will proceed through this same request, so the two events cover the same allocation context (classLoader, size, metadataType), but they fire at a different moment/granularity: the log is the precursor queuing step while the JFR event is the terminal failure."
+    "coverageNote": "jdk.MetaspaceOOM fires when a metaspace allocation definitively fails with OOM; jdk.MetaspaceAllocationFailure fires on allocation failure. This log site fires earlier — when a critical allocation request is queued into the global list (before the OOM is thrown). The OOM path will proceed through this same request, so the two events cover the same allocation context (classLoader, size, metadataType), but they fire at a different moment/granularity: the log is the precursor queuing step while the JFR event is the terminal failure."
   },
   {
     "file": "src/hotspot/share/oops/cpCache.cpp",
@@ -3182,7 +3234,7 @@
     "jfrEvent": "jdk.ClassUnload",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classunload",
     "kind": "partial",
-    "coverageNote": "jdk.ClassUnload fires when a class is unloaded and carries unloadedClass+definingClassLoader; this log line is emitted during sibling-link traversal cleanup which precedes or accompanies unloading, but JFR does not record the internal hierarchy traversal step\u2014only the unload outcome per class"
+    "coverageNote": "jdk.ClassUnload fires when a class is unloaded and carries unloadedClass+definingClassLoader; this log line is emitted during sibling-link traversal cleanup which precedes or accompanies unloading, but JFR does not record the internal hierarchy traversal step—only the unload outcome per class"
   },
   {
     "file": "src/hotspot/share/oops/klass.cpp",
@@ -3200,7 +3252,7 @@
     "jfrEvent": "jdk.ClassUnload",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#classunload",
     "kind": "partial",
-    "coverageNote": "The purged class name (%s) corresponds to jdk.ClassUnload.unloadedClass \u2014 the same class that gets unloaded also triggers MDO cleanup. However ClassUnload fires at actual class unload time, not at MDO purge during AOT dump, so these are different moments; only the class identity datum overlaps."
+    "coverageNote": "The purged class name (%s) corresponds to jdk.ClassUnload.unloadedClass — the same class that gets unloaded also triggers MDO cleanup. However ClassUnload fires at actual class unload time, not at MDO purge during AOT dump, so these are different moments; only the class identity datum overlaps."
   },
   {
     "file": "src/hotspot/share/prims/jvmtiRedefineClasses.cpp",
@@ -3491,7 +3543,7 @@
     "jfrEvent": "jdk.JavaExceptionThrow",
     "jfrEventsUrl": "https://sap.github.io/jfrevents/25.html#javaexceptionthrow",
     "kind": "partial",
-    "coverageNote": "jdk.JavaExceptionThrow carries thrownClass and message for normal exceptions; this log fires on the special fallback path where a thread cannot call Java and a pre-allocated exception is substituted \u2014 the class name overlaps but the moment and fallback exception identity differ"
+    "coverageNote": "jdk.JavaExceptionThrow carries thrownClass and message for normal exceptions; this log fires on the special fallback path where a thread cannot call Java and a pre-allocated exception is substituted — the class name overlaps but the moment and fallback exception identity differ"
   },
   {
     "file": "src/hotspot/share/utilities/exceptions.cpp",
