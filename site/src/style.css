@@ -122,8 +122,8 @@ details.wiz-group[open] > .wiz-group-head::before { content: "▾"; }
 .results-header { color: var(--muted); margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; position: sticky; top: 0; background: var(--bg, #fff); z-index: 5; padding: 6px 0; }
 .sites-filter { flex: 1; min-width: 180px; max-width: 340px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, monospace; font-size: 12px; }
 .sites-filter:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37, 99, 235, .15); }
-.render-all-btn, .collapse-all-btn { padding: 3px 10px; font-size: 12px; border: 1px solid var(--accent); border-radius: 6px; background: none; color: var(--accent); cursor: pointer; }
-.render-all-btn:hover, .collapse-all-btn:hover { background: var(--accent); color: #fff; }
+.render-all-btn, .collapse-all-btn, .sort-btn { padding: 3px 10px; font-size: 12px; border: 1px solid var(--accent); border-radius: 6px; background: none; color: var(--accent); cursor: pointer; }
+.render-all-btn:hover, .collapse-all-btn:hover, .sort-btn:hover { background: var(--accent); color: #fff; }
 .collapse-all-btn { margin-left: auto; }
 .file-group { margin-bottom: 20px; }
 .file-name {

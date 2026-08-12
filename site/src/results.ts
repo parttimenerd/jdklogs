@@ -86,7 +86,7 @@ export function renderFiringSites(
   let sortByCount = true;
   const sortBtn = document.createElement("button");
   sortBtn.type = "button";
-  sortBtn.className = "collapse-all-btn";
+  sortBtn.className = "sort-btn";
   sortBtn.textContent = "Sort: most sites";
   header.appendChild(sortBtn);
   root.appendChild(header);
