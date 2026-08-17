@@ -141,6 +141,18 @@ A JFR event implementation **must not** gate data collection on whether `-Xlog:t
 
 The sign convention on `deltaBytes` is important: a successful trim returns a negative delta (afterBytes < beforeBytes). This is counterintuitive but matches the "after minus before" arithmetic. If upstream prefers an unsigned `freedBytes = max(0, beforeBytes - afterBytes)`, that is an equivalent design choice.
 
+#### What it is used for
+
+Containerized JVMs running glibc suffer from a well-known RSS bloat problem: malloc arenas fragment over time, returning memory to the OS slowly or not at all. `TrimNativeHeapInterval` (default 1000ms in container environments) runs a background trim. Without a JFR event, operators cannot verify that:
+1. Trims are executing at the configured interval.
+2. Each trim is recovering any RSS (a trim that executes but recovers 0 bytes indicates all arenas are fully committed — there is nothing to return).
+3. The trim delta is significant enough to justify the trim overhead.
+
+**Tuning patterns**:
+- `deltaBytes` near 0 on most trims → either the JVM is continuously using all its native memory (no arena bloat), or the platform does not support RSS recovery (check `detailsAvailable`).
+- `deltaBytes` large (> 100MB) on first trim, then near 0 → normal: initial trim clears accumulated arena bloat; subsequent trims find little to release.
+- Trim frequency can be tuned via `-XX:TrimNativeHeapInterval`; if `deltaBytes` is consistently 0, the interval can be increased to reduce overhead.
+
 #### Why existing events don't cover this
 
 - `jdk.ResidentSetSize`: tracks instantaneous RSS, not trim deltas. Cannot distinguish a trim recovery from normal allocation fluctuation.
@@ -197,6 +209,8 @@ Allocating application thread
 
 **GCOverheadLimit feature**: Implemented in G1 via JDK-8212084, [PR #27950](https://github.com/openjdk/jdk/pull/27950), merged JDK 26. Also present in Parallel GC.
 
+**Counter-update vs. throw-point distinction**: `update_gc_overhead_counter()` ([`g1CollectedHeap.cpp:995`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)) runs at each safepoint and logs the raw counter at `log_debug(gc)`. The JFR event belongs at the throw point — `satisfy_failed_allocation()` line 1109 — where `gc_overhead_limit_exceeded()` returns true and control flow is about to return null to the allocating thread. At that point, the final counter value, `long_term_gc_time_ratio`, and `free_space_percent` are all in scope.
+
 #### Fields
 
 | Field | Source | G1 | Parallel | Nullable? |
@@ -204,11 +218,11 @@ Allocating application thread
 | `startTime` | Standard JFR | Yes | Yes | No |
 | `gcId` | `GCId::peek()` — last completed GC id, approximate | Yes | Yes | No |
 | `collector` | String literal: `"G1"` or `"Parallel"` | Yes | Yes | No |
-| `gcTimePercent` | G1: `long_term_gc_time_ratio*100`; Parallel: `100-mutator_time_percent` | Yes | Yes | No |
-| `freeSpacePercent` | G1: free regions as percent of total | Yes | No | Yes (null for Parallel) |
-| `freeSpaceYoungPercent` | Parallel only | No | Yes | Yes (null for G1) |
-| `freeSpaceOldPercent` | Parallel only | No | Yes | Yes (null for G1) |
-| `consecutiveViolations` | `_gc_overhead_counter`; always equals `GCOverheadLimitThreshold` (default 5) at throw time | Yes | Yes | No |
+| `gcTimePercent` | G1: `_policy->analytics()->long_term_gc_time_ratio() * 100` ([`g1CollectedHeap.cpp:1002`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1002)); Parallel: `100 - _size_policy->mutator_time_percent() * 100` ([`parallelScavengeHeap.cpp:436`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L436)) | Yes | Yes | No |
+| `freeSpacePercent` | G1: `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())` ([`g1CollectedHeap.cpp:1003`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1003)) | Yes | No | Yes (null for Parallel) |
+| `freeSpaceYoungPercent` | Parallel: `percent_of(_young_gen->free_in_bytes(), _young_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:437`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L437)) | No | Yes | Yes (null for G1) |
+| `freeSpaceOldPercent` | Parallel: `percent_of(_old_gen->free_in_bytes(), _old_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:438`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L438)) | No | Yes | Yes (null for G1) |
+| `consecutiveViolations` | `_gc_overhead_counter`; equals `GCOverheadLimitThreshold` (default 5) at throw time — counter incremented in `update_gc_overhead_counter()` at each safepoint, checked via `gc_overhead_limit_exceeded()` | Yes | Yes | No |
 
 #### Why existing events don't cover this
 
@@ -216,11 +230,20 @@ Allocating application thread
 - `jdk.GCHeapSummary`, `jdk.G1HeapSummary`, `jdk.PSHeapSummary`: record heap sizes at GC events, not at the allocation failure → OOM decision moment.
 - No existing JFR event captures the GC overhead limit violation counter or the decision to throw.
 
+#### What it is used for
+
+`GCOverheadLimitExceeded` OOM is one of the hardest production failures to diagnose post-hoc because the JVM typically exits immediately. Heap dumps capture the live set but not the GC overhead metrics at the moment of the decision. This event fires synchronously at the throw point, giving you a structured record of:
+
+- Was the threshold correctly calibrated? `gcTimePercent` shows the actual GC time fraction at the moment of throw. If it equals exactly `GCTimeLimit` (default 98%), the threshold was met as expected. If it seems lower, check whether `consecutiveViolations` (always at `GCOverheadLimitThreshold`) was the binding constraint.
+- What was the heap free-space ratio? Low `freeSpacePercent` confirms heap exhaustion; high `freeSpacePercent` with high `gcTimePercent` indicates GC is running but not reclaiming (live set too large, not heap exhaustion).
+- **Tuning**: if `gcTimePercent` is high but `freeSpacePercent` is also reasonable, the heap may be correctly sized but the workload has a large live set that GC cannot shrink. Increase `-Xmx` or reduce the live set. If `freeSpacePercent` is also near 0, the application is genuinely out of memory.
+
 #### Open questions / upstream concerns
 
 1. G1 and Parallel have different free-space field shapes. The nullable pattern is acceptable in JFR but upstream may want two separate events (`jdk.G1GCOverheadLimitExceeded`, `jdk.ParallelGCOverheadLimitExceeded`) to avoid the impedance mismatch. The trade-off: separate events are cleaner but require more boilerplate.
 2. `gcId` uses `GCId::peek()` which returns the last completed GC id, not the current allocation cycle. Is "approximate" acceptable in the field description, or should this be omitted?
 3. `consecutiveViolations` is always equal to `GCOverheadLimitThreshold` at throw time (the counter must reach the threshold to throw). Is this field useful, or is it a constant disguised as a variable?
+4. Both GC implementations call `update_gc_overhead_counter()` (G1) / `check_gc_overhead_limit()` (Parallel) from `satisfy_failed_allocation()` and then check the result before throwing. The event must fire **after** the counter update and **before** returning null — i.e., at the `if (gc_overhead_limit_exceeded())` block at line 1109 / line 506 respectively. The `long_term_gc_time_ratio` and free-space values computed in the same update call are still in-scope locals at that point.
 
 ---
 
@@ -274,17 +297,25 @@ ShenandoahMmuTask::task()   [PeriodicTask at GCPauseIntervalMillis ~200ms]
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `gcId` | `_most_recent_gcid` | No |
-| `phase` | `"Concurrent Young GC"`, `"Concurrent Global GC"`, `"Concurrent Bootstrap GC"`, `"Mixed Concurrent GC"`, `"Full GC"`, `"Degenerated GC"` | Yes (null for periodic path if included later) |
-| `gcuPercent` | GC utilization 0–100 | No |
-| `muPercent` | Mutator utilization 0–100 | No |
-| `periodSeconds` | Measurement window duration | No |
-| `isPeriodicSample` | `true` when emitted from periodic reporter | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Timestamp of GC phase completion |
+| `gcId` | `_most_recent_gcid` — GC ID of the collection that updated the MMU tracker | No | Correlate with `jdk.GarbageCollection` |
+| `phase` | `"Concurrent Young GC"`, `"Concurrent Global GC"`, `"Concurrent Bootstrap GC"`, `"Mixed Concurrent GC"`, `"Full GC"`, `"Degenerated GC"` — synthesized from collection type | Yes (null for periodic path if added later) | Compare GCU% across phases: Full GC and degenerated GC typically have higher GCU% than concurrent |
+| `gcuPercent` | GC utilization 0–100 — fraction of elapsed wall-clock time spent doing GC work | No | **Primary metric**: high `gcuPercent` means GC is consuming a large fraction of CPU time. Compare against SLA: e.g., `gcuPercent > 20%` might violate a throughput target |
+| `muPercent` | Mutator utilization 0–100 — `100 - gcuPercent` approximately | No | **Complementary**: the fraction of wall-clock time mutators ran; `muPercent = 100 - gcuPercent` when tracking is exact |
+| `periodSeconds` | Measurement window duration in seconds — length of the phase or measurement window | No | Normalizes the GCU%: a 5% GCU over 100ms vs. 100ms is the same rate as 5% over 1s |
+| `isPeriodicSample` | `true` when emitted from `report()` periodic path | No | Distinguishes end-of-cycle measurements (high accuracy) from periodic snapshots (interpolated); for initial proposal this is always `false` |
 
-For the initial proposal, `isPeriodicSample` is always `false` and `phase` is never null. These fields anticipate the periodic path being added in a follow-up.
+#### What it is used for
+
+`jdk.G1MMU` measures whether G1 met its pause-time goal within a fixed window. Shenandoah MMU measures something fundamentally different: what fraction of wall-clock time was the JVM spending on GC across an entire GC phase? This answers SLA questions like "is my application spending > 10% of time in GC?" — questions that pause-time metrics alone cannot answer for concurrent collectors (where much of the GC work is not a pause at all).
+
+**Key patterns**:
+- `gcuPercent` trending upward across consecutive young GCs → GC CPU overhead is growing; likely means allocation rate is increasing faster than GC throughput. Check heap sizing.
+- `gcuPercent` high for `phase="Concurrent Young GC"` but normal for global → young generation is undersized, running concurrent collections more frequently than the old generation needs.
+- `gcuPercent > 30%` sustained → this is approaching the point where GC overhead is seriously impacting application throughput; consider increasing `-Xmx` or reducing live set.
+- Comparing `gcuPercent` for `"Full GC"` vs `"Concurrent Young GC"` phases quantifies the relative cost of fallback vs. normal operation.
 
 #### Why existing events don't cover this
 
@@ -388,6 +419,17 @@ Trigger fields from: regulator thread → heuristic should_start_gc() calls
 - `jdk.GCHeapSummary`: records heap sizes before/after GC; does not capture why GC was started.
 - `jdk.GarbageCollection`: records GC outcomes; the `cause` field exists but does not capture the rich heuristic reasoning (trigger type, rates, fragmentation metrics).
 
+#### What it is used for
+
+Shenandoah's generational heuristics make nuanced decisions — not just "heap is full, start GC" but "allocation is accelerating at this rate for this anticipated duration, and given this margin of error." Without this event, every GC start looks identical in JFR: a `jdk.GarbageCollection` event with a cause string. You cannot tell whether GC started because of a smooth allocation rate, a momentary spike, old-gen fragmentation, or a growth trigger.
+
+**Tuning patterns**:
+- `triggerType=rate_accelerated` repeatedly → workload has frequent phase changes (many threads suddenly allocating). `anticipatedGcDurationMs` tells you how much buffer exists; if it's shrinking over time, the heap is under increasing pressure.
+- `triggerType=fragmentation` with growing `fragmentationDensityPct` → old gen is becoming sparser; consider lowering `ShenandoahOldGarbageThreshold` to reclaim fragmented regions more eagerly.
+- `triggerType=growth` with `currentUsageBytes` >> `liveAtPrevMarkBytes` → promotions from young gen are accumulating in old gen faster than old GCs are running. Either increase old GC frequency or increase old-gen size.
+- `triggerType=expansion_failure` → old gen is at max size and cannot expand; imminent OOM unless `-Xmx` is increased or the live set shrinks.
+- `decision="interrupt_old_for_young"` frequently → young collections are pre-empting old collections; this is expected behavior but if old collections are never completing, old gen will fill.
+
 #### Open questions / upstream concerns
 
 1. **Multi-site emission**: This event spans `service_concurrent_normal_cycle()` (control thread), `log_trigger()` (regulator thread), and `prepare_for_old_collections()` (old heuristics). Upstream will ask for a single emission point. The standard approach is to accumulate fields into a struct that is populated across the call chain and emitted at the control thread site. This is implementable but requires design work.
@@ -427,19 +469,29 @@ GC STW thread
 
 **Thread**: GC STW thread.
 
-**Early-exit semantics**: The function returns on the FIRST dimension that passes. If free space is sufficient, the function returns early without evaluating used-space, internal-frag, or external-frag. This means not all four dimensions are always evaluated.
+**Early-exit semantics**: The function checks dimensions in order: free space → used space → internal fragmentation → external fragmentation. It returns `true` (good progress) on the **first** dimension that passes. It returns `false` only if **all four** dimensions fail. This means if free space passes, the used/frag dimensions are never evaluated — so when `goodProgress=true`, only `freePercent` has been evaluated; the others were short-circuited. The `failedDimension` field captures the first dimension that failed (leading to false), or null if `goodProgress=true`.
+
+**Exact source variables at `shenandoahMetrics.cpp:38-90`**:
+- `freeActual = _free_set->available()` — available bytes in mutator partition
+- `freeExpected = (soft_max_capacity / 100) * ShenandoahCriticalFreeThreshold`
+- `progressActual = _used_before - used_after` (bytes freed this GC)
+- `progressExpected = ShenandoahHeapRegion::region_size_bytes()` (threshold = 1 region)
+- `ifActual = _if_before - _free_set->internal_fragmentation()` (delta fragmentation)
+- `efActual = _ef_before - _free_set->external_fragmentation()` (delta fragmentation)
+
+The `badProgressCount` is `ShenandoahCollectorPolicy::_consecutive_degenerated_gcs_without_progress`, incremented in `record_degenerated(bool progress)` at [`shenandoahCollectorPolicy.cpp:108`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahCollectorPolicy.cpp#L108). The threshold `CONSECUTIVE_BAD_DEGEN_PROGRESS_THRESHOLD = 2` is a `constexpr` at [`shenandoahCollectorPolicy.hpp:69`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahCollectorPolicy.hpp#L69). When `_consecutive_degenerated_gcs_without_progress >= 2`, `should_run_full_gc()` returns true and the next degenerated GC escalates to Full GC.
 
 #### Fields
 
 **Simplified version (recommended for upstream)**:
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `freePercent` | `freeActual/capacity` | No |
-| `goodProgress` | Boolean result of `is_good_progress()` | No |
-| `failedDimension` | `"free_space"` / `"used_space"` / `"internal_frag"` / `"external_frag"` / `null` if passed | Yes |
-| `badProgressCount` | `_consecutive_degenerated_gcs_without_progress` from `ShenandoahCollectorPolicy`; reaching `CONSECUTIVE_BAD_DEGEN_PROGRESS_THRESHOLD` (= 2) triggers Full GC escalation | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Correlate with `jdk.GarbageCollection` gcId |
+| `freePercent` | `free_actual * 100 / soft_max_capacity` — available bytes in mutator partition / soft max | No | Low → approaching critical threshold; `ShenandoahCriticalFreeThreshold` (default 6%) is the boundary |
+| `goodProgress` | Boolean result of `is_good_progress()` | No | `false` → this degenerated GC did not improve heap state; watch `badProgressCount` |
+| `failedDimension` | First dimension that failed: `"free_space"` / `"used_space"` / `"internal_frag"` / `"external_frag"` / `null` if passed | Yes | Identifies which resource is constrained: free_space = overall pressure, used_space = GC didn't free enough, frag = heap is fragmented |
+| `badProgressCount` | `_consecutive_degenerated_gcs_without_progress` from `ShenandoahCollectorPolicy`; threshold = `CONSECUTIVE_BAD_DEGEN_PROGRESS_THRESHOLD` (= 2) | No | **Most actionable field**: value ≥ 2 means next non-successful degenerated GC will escalate to Full GC; value = 1 is a warning |
 
 **Full version (12 fields — for reference, not for initial proposal)**:
 
@@ -451,6 +503,15 @@ GC STW thread
 | `internalFragDeltaPct`, `internalFragThresholdPct`, `internalFragPassed` | Null if earlier dimension failed | Yes |
 | `externalFragDeltaPct`, `externalFragThresholdPct`, `externalFragPassed` | Null if earlier dimension failed | Yes |
 
+#### What it is used for
+
+A degenerated GC is Shenandoah's first-tier fallback: when a concurrent GC fails to keep up, the JVM falls back to a stop-the-world degenerated GC. If that too fails to make progress (e.g., heap is full and fragmented), the JVM escalates to Full GC (compacting, much longer pause). This event tells you **whether each fallback GC was productive**, and gives you an early warning of the escalation chain: `badProgressCount=1` means one consecutive failure, `badProgressCount=2` means the next failure triggers Full GC.
+
+**Tuning actions per `failedDimension`**:
+- `free_space`: heap is under sustained pressure — increase `-Xmx`, reduce live set, or lower `ShenandoahCriticalFreeThreshold`
+- `used_space`: GC is running but not freeing enough — increase GC frequency (`ShenandoahFreeThreshold`) or reduce object tenure rates
+- `internal_frag` / `external_frag`: fragmentation is not improving despite GC — consider reducing `ShenandoahGarbageThreshold` to collect more aggressive fragmented regions
+
 #### Why existing events don't cover this
 
 - `jdk.ShenandoahCollectionDecision` (proposed): fires at the START of a cycle; `ReclaimProgress` fires at the END of a degenerated/full GC. They are not mergeable.
@@ -459,9 +520,10 @@ GC STW thread
 
 #### Open questions / upstream concerns
 
-1. The 12-field version with cascading nullability will receive pushback. The simplified 4-field version is the right starting point.
+1. The 12-field version with cascading nullability will receive pushback. The simplified 5-field version is the right starting point.
 2. `badProgressCount` at value 2 means "Full GC will be triggered next" — this is the most actionable field. If only one field could be included, it would be this one.
 3. Should the event also fire after a successful `is_good_progress()` call (when `goodProgress=true`)? Yes — the event is equally useful for confirming that a degenerated GC was sufficient.
+4. Note the asymmetry in early-exit: `goodProgress=true` happens on the FIRST passing dimension (which may be just free space), while `goodProgress=false` means ALL four dimensions failed. The `failedDimension` field when `goodProgress=true` is always null — the function returned before evaluating remaining dimensions.
 
 ---
 
@@ -501,19 +563,25 @@ Timing: after concurrent marking, before CSet finalization.
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `gcId` | Correlates with jdk.GarbageCollection | No |
-| `tenuringThreshold` | New threshold (age in GC cycles) | No |
-| `minTenuringAge` | `ShenandoahGenerationalMinTenuringAge` flag value | No |
-| `maxTenuringAge` | `ShenandoahGenerationalMaxTenuringAge` flag value | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Correlate with `jdk.GarbageCollection` gcId |
+| `gcId` | Correlates with jdk.GarbageCollection | No | Link tenuring threshold to the specific young collection |
+| `tenuringThreshold` | New threshold (age in GC cycles) — from `compute_tenuring_threshold()` | No | Low value (e.g., 1–3) → objects promote quickly, putting pressure on old gen; high value (≥ `maxTenuringAge`) → objects linger in young gen, increasing young-gen pressure. Watch for threshold oscillation between extremes |
+| `minTenuringAge` | `ShenandoahGenerationalMinTenuringAge` flag value | No | Context: threshold is always ≥ this. If `tenuringThreshold == minTenuringAge`, the algorithm wanted to promote more aggressively but was clamped |
+| `maxTenuringAge` | `ShenandoahGenerationalMaxTenuringAge` flag value | No | Context: threshold is always ≤ this. If `tenuringThreshold == maxTenuringAge`, the algorithm found low mortality and would keep objects in young even longer |
 
 Fields excluded from the proposal (present at `log_debug` sites): mortality rate per-cohort, dark matter fraction. These are too detailed and at the wrong log level.
 
-#### Why existing events don't cover this
+#### What it is used for
 
-- `jdk.TenuringDistribution`: covers G1/Parallel per-age-bucket sizes; not applicable to ZGC or Shenandoah; does not expose the computed threshold value itself.
+Tenuring threshold controls when objects "graduate" from young to old generation. A mis-tuned threshold causes either:
+- **Too-early promotion** (low threshold): young objects that are actually short-lived get promoted to old gen, growing the old gen unnecessarily and eventually triggering old-gen collections.
+- **Too-late promotion** (high threshold): long-lived objects stay in young gen longer, surviving multiple young collections and consuming young-gen space.
+
+Shenandoah computes this dynamically from mortality rates, so the threshold adapts to object lifetimes. Watching `tenuringThreshold` over time lets you verify the algorithm is stabilizing (steady state) vs. oscillating (possibly a bursty workload with varying object lifetimes). Consistently hitting `maxTenuringAge` suggests the app has very long-lived objects in young gen — consider raising `ShenandoahGenerationalMaxTenuringAge`.
+
+#### Why existing events don't cover this
 - `jdk.GarbageCollection`: records GC completion; no tenuring threshold field.
 - No existing JFR event covers Shenandoah-specific tenuring threshold computation.
 
@@ -563,12 +631,18 @@ Timing: after `selector.select()` produces liveness data, before `_relocation_se
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `gcId` | Correlates with jdk.GarbageCollection | No |
-| `tenuringThreshold` | Selected threshold | No |
-| `reason` | `"Promote All"` / `"ZTenuringThreshold"` / `"Computed"` | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Correlate with `jdk.ZYoungGarbageCollection` gcId |
+| `gcId` | Correlates with jdk.GarbageCollection | No | Link threshold to specific young collection |
+| `tenuringThreshold` | Selected threshold — age in GC cycles before object is promoted | No | Same interpretation as Shenandoah: low = aggressive promotion, high = retention in young gen |
+| `reason` | `"Promote All"` / `"ZTenuringThreshold"` / `"Computed"` | No | **Key discriminator**: `"Promote All"` means memory pressure forced all objects to old gen; `"ZTenuringThreshold"` means admin overrode with `-XX:ZTenuringThreshold=N`; `"Computed"` means the dynamic algorithm ran normally. If you frequently see `"Promote All"`, increase `-Xmx` or the young-gen size |
+
+#### What it is used for
+
+- **Baseline the computed threshold**: what is the typical threshold for your workload? Compare across deployments or load patterns.
+- **Detect mode shifts**: `reason="Promote All"` is an emergency signal — ZGC decided to flush the young gen entirely because allocation pressure exceeded its model. This causes a spike in old-gen promotions.
+- **Validate flag overrides**: if `-XX:ZTenuringThreshold` is set but `reason` shows `"Computed"`, the flag value was out of range; if `reason="ZTenuringThreshold"` on every collection, the flag is locking the threshold and the dynamic algorithm is not running.
 
 #### Why existing events don't cover this
 
@@ -633,6 +707,19 @@ Fires at end of every ZGC generation collection (both young and old).
 - No existing JFR event exposes nmethod registration counts for any GC.
 - `jdk.CodeCacheStatistics`: covers the code cache globally; does not expose per-GC nmethod table state.
 
+#### What it is used for
+
+ZGC must scan all registered nmethods during each GC cycle to find object references in compiled code. A large or stale nmethod table adds scanning overhead to every collection. The `staleNMethodSlots` counter tracks zombie entries — nmethods that have been unregistered (deoptimized or evicted) but whose table slots have not yet been reclaimed by a rebuild.
+
+A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the table rebuild cadence is not keeping up with nmethod eviction rate. This is primarily a concern in environments with:
+- Dynamic class loading/unloading (OSGi, JEE, microservices with hot class reloading)
+- Large polyglot workloads using GraalVM where nmethod count is very high
+- Short-lived lambda-heavy applications generating many single-use compiled methods
+
+**Tuning actions**:
+- If `staleNMethodSlots` grows unbounded between rebuilds, check whether `jdk.NMethodSweep` events show adequate sweep frequency.
+- High `registeredNMethods` (> 100K) in combination with long ZGC nmethod scanning phases → investigate code cache size and JIT tier thresholds.
+
 #### Open questions / upstream concerns
 
 1. **Weak production motivation**: Is nmethod table overhead a real problem that operators encounter? The event has low priority precisely because there is no documented evidence of nmethod table overhead causing production issues. Filing without motivation evidence may result in the patch being deprioritized.
@@ -681,22 +768,30 @@ G1ConcurrentRefineThread control loop
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `duration` | Standard JFR | No |
-| `preSweepMs` | Pre-sweep duration | No |
-| `cardRefineMs` | Card refinement duration | No |
-| `cardsScanned` | Total cards scanned | No |
-| `cardsClean` | Already-clean cards (no work needed) | No |
-| `cardsNotClean` | Cards with dirty state to process | No |
-| `cardsNotParsable` | Cards in mid-transition regions | Consider dropping — low production value |
-| `cardsNoCrossRegion` | Cards filtered for within-region references; high value = good heap locality | No |
-| `cardsRefersToCset` | Cards pointing to collection set at scan time | Consider dropping (see below) |
-| `cardsStillRefersToCset` | Cards still pointing to CSet after refinement; delta vs. `cardsRefersToCset` = CSet churn | No |
-| `cardsPending` | Backlog remaining after sweep | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Timing and frequency of sweeps between GC pauses |
+| `duration` | Standard JFR | No | Total sweep wall time |
+| `preSweepMs` | Time before actual card refinement begins (snapshot, bookkeeping) | No | High `preSweepMs` relative to `cardRefineMs` = overhead dominated by setup; suspect lock contention or large remembered set |
+| `cardRefineMs` | `TimeHelper::counter_to_millis(stats->refine_duration())` — actual card refinement work | No | **Primary throughput metric** |
+| `cardsScanned` | `stats->cards_scanned()` — total dirty cards examined | No | Volume indicator; divide by `cardRefineMs` for throughput in cards/ms |
+| `cardsClean` | `stats->cards_clean()` — cards already clean when scanned (no work needed) | No | High ratio of clean/scanned means cards are being re-queued unnecessarily; can indicate write barrier overhead without actual dirtying |
+| `cardsNotClean` | `stats->cards_not_clean()` — cards that required processing | No | The actual work done; `cardsNotClean / cardsScanned` = effective work ratio |
+| `cardsNotParsable` | `stats->cards_not_parsable()` — cards in mid-transition regions (skip) | Consider dropping | Low production diagnostic value; regions in mid-transition are rare |
+| `cardsNoCrossRegion` | `stats->cards_no_cross_region()` — cards filtered because reference is within same region | No | **Heap locality indicator**: high `cardsNoCrossRegion / cardsNotClean` = objects frequently reference their spatial neighbors — good locality reduces remembered-set pressure |
+| `cardsRefersToCset` | `stats->cards_refer_to_cset()` — cards pointing to CSet at scan time | Consider dropping | Intermediate value; `cardsStillRefersToCset` is the actionable metric |
+| `cardsStillRefersToCset` | `stats->cards_already_refer_to_cset()` — cards still pointing to CSet after refinement | No | Non-zero = cards that could not be processed because regions were already in CSet; high value may increase pause work |
+| `cardsPending` | `stats->cards_pending()` — backlog remaining after sweep | No | **Backlog indicator**: growing `cardsPending` across sweeps means refinement is not keeping up with the write rate |
 
-Consider dropping `cardsRefersToCset` and keeping only `cardsStillRefersToCset` — the delta is derivable from the two fields, but the raw "still pointing" count is the actionable metric.
+#### What it is used for
+
+G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pauses. If refinement cannot keep up, the backlog grows and must be processed during the next GC pause — extending pause time. After the JEP 522 write barrier redesign (JDK 25), the card-dirtying model changed; this event provides the first structured way to monitor refinement throughput in production without enabling debug logging.
+
+**Key diagnosis**:
+- `cardsPending` growing over time → refinement thread count is insufficient; increase `G1ConcurrentRefinementThreads` or check GC CPU overhead.
+- `cardsClean / cardsScanned` > 50% → many cards are being scanned redundantly; may indicate write barrier generating redundant marks.
+- `cardRefineMs` high relative to inter-GC interval → refinement consuming significant CPU; balance against application threads.
+- `cardsStillRefersToCset` non-zero frequently → consider adjusting CSet selection to reduce the number of regions in CSet that have pending references.
 
 #### Why existing events don't cover this
 
@@ -757,19 +852,28 @@ G1 concurrent refinement control thread
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `threadsWanted` | `new_wanted` from `adjust_threads_wanted()` | No |
-| `pendingCards` | Actual pending at pause time | No |
-| `pendingCardsFromGC` | Pending due to GC activity | No |
-| `pendingCardsTarget` | Policy goal (primary adaptive sizing lever) | No |
-| `predictedPendingCards` | Predicted pending at next GC | Consider dropping |
-| `predictedRefineRate` | Predicted refinement rate in cards/ms | No |
-| `dirtiedCardRate` | Dirtied card rate in cards/ms (demand side) | No |
-| `goalMs` | Refinement time goal window | No |
-| `timeUntilNextGC` | Estimated time until next GC in ms | No |
-| `exceededGoal` | Boolean: sweep exceeded goal window | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Correlate with GC pause or periodic adjustment |
+| `threadsWanted` | `new_wanted` from `adjust_threads_wanted()` — [`g1ConcurrentRefine.cpp:610`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L610) | No | **Primary output**: how many refinement threads the policy wants. If repeatedly at max → refinement is undersized |
+| `pendingCards` | `policy->current_pending_cards()` — actual pending card count | No | Current backlog; if growing between policy ticks, refinement is falling behind |
+| `pendingCardsFromGC` | `pending_cards_from_gc()` — cards dirtied by GC itself (internal remembered-set updates) | No | Distinguishes GC-generated card traffic from mutator write traffic; high `pendingCardsFromGC` relative to `pendingCards` = GC is contributing significantly to its own backlog |
+| `pendingCardsTarget` | `_pending_cards_target` — policy's goal for pending card count | No | **Key tuning lever**: if `pendingCards` consistently exceeds `pendingCardsTarget`, the target may need to increase or thread count is constrained |
+| `predictedPendingCards` | `_threads_needed.predicted_cards_at_next_gc()` — predicted pending at next GC | Consider dropping | Model estimate; useful for detecting if the policy predicts it will fall behind before next pause |
+| `predictedRefineRate` | `analytics->predict_concurrent_refine_rate_ms()` — predicted cards/ms refinement throughput | No | The capacity side of the balance: throughput × time-until-gc ≈ expected cards refined |
+| `dirtiedCardRate` | `analytics->predict_dirtied_cards_rate_ms()` — predicted cards/ms write rate from mutators | No | **Demand side**: if `dirtiedCardRate > predictedRefineRate × threadsWanted`, the policy will fall behind |
+| `goalMs` | Policy's refinement time window goal | No | Refinement is expected to clear backlog within this window |
+| `timeUntilNextGC` | `_threads_needed.predicted_time_until_next_gc_ms()` | No | Time available for refinement before next GC pause; `timeUntilNextGC × predictedRefineRate × threadsWanted` ≈ expected clearance |
+| `exceededGoal` | Boolean: sweep exceeded goal window | No | `true` repeatedly → refinement cannot complete in time, increasing pause-time risk |
+
+#### What it is used for
+
+Complements `jdk.G1ConcurrentRefinementSweep`: where Sweep shows per-sweep throughput, Policy shows the adaptive thread-count decision. Together they answer: "Is G1 adjusting the right number of refinement threads, and is the pending-card target realistic for this workload?"
+
+**Key patterns**:
+- `threadsWanted` at maximum and `pendingCards > pendingCardsTarget` → more refinement capacity needed; consider `-XX:G1ConcurrentRefinementThreads`.
+- `dirtiedCardRate >> predictedRefineRate × threadsWanted` → write rate exceeds refinement capacity; expect pause-time spikes from residual card processing.
+- `exceededGoal=true` frequently → refinement time window is too tight; increase `-XX:G1RefinementThresholdStep`.
 
 #### Why existing events don't cover this
 
@@ -822,23 +926,33 @@ GC pause thread (during CSet finalization, before evacuation)
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `candidateType` | `"Marking"` or `"Retained"` — two passes per mixed GC | No |
-| `minRegions` | Min regions to add (`min_old_cset_length`) | No |
-| `maxRegions` | Max regions to add | No |
-| `availableRegions` | Candidate regions available | No |
-| `availableGroups` | Card-set groups available | Consider dropping |
-| `selectedRegions` | Initial + normal regions selected | No |
-| `optionalRegions` | Optional regions selected | No |
-| `overBudgetRegions` | Regions added despite predicted time too high; nonzero = pause risk | No |
-| `predictedInitialTimeMs` | Predicted time for initial regions | No |
-| `predictedOptionalTimeMs` | Predicted time for optional regions | Consider dropping |
-| `timeRemainingMs` | Remaining GC time budget | No |
-| `stopReason` | `"exhausted"` / `"max_regions_reached"` / `"min_regions_reached"` / `"time_too_high"` / `"none_available"` | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Correlate with mixed GC pause (`jdk.GarbageCollection`) |
+| `candidateType` | `"Marking"` or `"Retained"` — two passes per mixed GC; marking candidates come from completed marking, retained from previous mixed GCs where optional regions were not evacuated | No | **Marking**: primary old-gen reclaim path. **Retained**: secondary path for optional regions deferred from prior pauses |
+| `minRegions` | `min_old_cset_length` / `min_retained_old_cset_length` — minimum regions that will be added regardless of time budget | No | If `selectedRegions < minRegions`, time budget was exceeded but regions were added anyway (see `overBudgetRegions`) |
+| `maxRegions` | `max_old_cset_length` — maximum regions the policy will add | No | If `availableRegions > maxRegions`, selection stopped at `maxRegions` despite having more candidates; tune `-XX:G1OldCSetRegionThresholdPercent` |
+| `availableRegions` | Candidate regions count at selection start | No | How many old-gen regions the GC could potentially reclaim |
+| `availableGroups` | Candidate groups (card-set groups) available | Consider dropping | Groups are an internal optimization structure; region count is more actionable |
+| `selectedRegions` | Initial (`num_inital_regions`) + normal regions actually selected | No | Compare to `availableRegions`: low ratio means time budget or `maxRegions` was the binding constraint |
+| `optionalRegions` | Optional regions selected (deferred to optional evacuation step) | No | Non-zero = time budget allowed for additional regions beyond the initial selection; these are attempted if time permits during evacuation |
+| `overBudgetRegions` | Regions added despite `time_remaining_ms == 0` — forced because below `minRegions` | No | Non-zero = pause risk: GC is adding regions whose predicted time exceeds remaining budget to meet the minimum |
+| `predictedInitialTimeMs` | Sum of predicted evacuation times for initial regions | No | Expected pause contribution from old-gen regions; compare to `jdk.GarbageCollection` duration |
+| `predictedOptionalTimeMs` | Predicted time for optional regions | Consider dropping | Optional regions are only attempted if time allows; this is a planning estimate |
+| `timeRemainingMs` | Remaining pause time budget at end of selection | No | `timeRemainingMs > 0` and candidates remaining → selection was bounded by `maxRegions` or exhaustion, not time |
+| `stopReason` | Synthesis from `print_finish_message()` calls in [`g1CollectionSet.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp): `"Maximum number of regions reached"` / `"Region amount reached min"` / `"Predicted time too high"` / `"Marking candidates exhausted"` / `"Retained candidates exhausted"` | No | **Why selection stopped**: `"Predicted time too high"` = time-limited, not region-limited; `"Maximum number of regions reached"` = `maxRegions` cap hit; `"exhausted"` = all candidates consumed |
 
 **DROPPED field**: `continueMixed` — from `G1Policy::decide_on_concurrent_start_pause()`, a different call site; cannot be safely attached to this event without reading state from a separate code location. If needed, file as a separate event or add to an existing `jdk.G1HeapSummary` extension.
+
+#### What it is used for
+
+Mixed GC is G1's mechanism for reclaiming old-gen space. If mixed GC is not selecting enough regions per pause, old-gen occupancy grows until Full GC is triggered. This event answers: "Is G1 selecting as many old-gen regions as it could, and what is stopping it from selecting more?"
+
+**Key patterns**:
+- `stopReason="Predicted time too high"` consistently → mixed GC is time-limited; increase `-XX:MaxGCPauseMillis` or reduce old-gen region garbage density.
+- `stopReason="Maximum number of regions reached"` consistently with `availableRegions >> selectedRegions` → `G1OldCSetRegionThresholdPercent` is the bottleneck; consider increasing it.
+- `overBudgetRegions > 0` frequently → the GC is forced to add over-budget regions to meet its minimum; pause times will exceed predictions. This often indicates old-gen backlog is accumulating — consider more frequent mixed GC via `G1MixedGCCountTarget`.
+- `Retained` type appearing → some regions were deferred from prior mixed pauses as optional. If `optionalRegions` from Marking is always 0 but Retained events appear, the GC may be struggling to clear its backlog in one pass.
 
 #### Why existing events don't cover this
 
@@ -890,20 +1004,30 @@ Fires at end of every young GC pause.
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `shortTermGcCpuUsagePct` | Short-term GC CPU usage — primary driver | No |
-| `longTermGcCpuUsagePct` | Long-term GC CPU usage — context | No |
-| `lowerThresholdPct` | Below this → eligible to shrink (from `GCTimeRatio`) | No |
-| `upperThresholdPct` | Above this → eligible to expand | No |
-| `gcCpuUsageTargetPct` | Desired steady-state value | No |
-| `expand` | Boolean: true=expand, false=shrink | Yes (null if `resizeBytes=0`) |
-| `resizeBytes` | Resize amount; 0 = no resize | No |
-| `atLimit` | Boolean: heap at expansion or shrink limit | No |
-| `scaleFactorPct` | Scale factor used in shrink calculation | Yes (null on expansion path) |
-| `freeRegions` | Free regions at shrink evaluation | Yes (null on expansion path) |
-| `regionsNeededForAlloc` | Regions needed for allocation headroom | Yes (null on expansion path) |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Correlate with `jdk.GarbageCollection` |
+| `shortTermGcCpuUsagePct` | `_analytics->short_term_gc_time_ratio() * 100` — primary driver for deviation counter | No | Compares against `upperThresholdPct` / `lowerThresholdPct` to determine resize direction |
+| `longTermGcCpuUsagePct` | `_analytics->long_term_gc_time_ratio() * 100` — checked every `long_term_count_limit()` pauses | No | Slow trend; expansion triggers when this exceeds `upperThresholdPct` at the long-term check interval |
+| `lowerThresholdPct` | `gc_cpu_usage_target * (1 - G1CPUUsageDeviationPercent/100)` where `gc_cpu_usage_target = 1/(1+GCTimeRatio)` (scaled by heap fill ratio) | No | Below this → shrink candidate |
+| `upperThresholdPct` | `gc_cpu_usage_target * (1 + G1CPUUsageDeviationPercent/100)` | No | Above this → expand candidate |
+| `gcCpuUsageTargetPct` | `1.0 / (1.0 + GCTimeRatio)` × heap-scale factor; steady-state desired GC CPU fraction | No | The target the policy is aiming for. Derivable from `GCTimeRatio` but heap-scaling makes it non-trivial |
+| `expand` | `true`=expand, `false`=shrink | Yes (null if `resizeBytes=0`) | Direction of resize |
+| `resizeBytes` | `young_collection_resize_amount()` return value; 0 = no resize triggered this pause | No | Size of resize in bytes; 0 on most pauses |
+| `atLimit` | Boolean: heap already at min/max capacity, so resize was requested but not possible | No | `true` + `expand=true` means heap needs to grow but `-Xmx` is the ceiling — increase max heap |
+| `scaleFactorPct` | From `young_collection_shrink_amount()` sigmoid scaling — accounts for how far GC CPU usage deviated | Yes (null on expansion path) | Higher scale factor → more aggressive shrink. Sigmoid-based: a 100% deviation doubles the scale |
+| `freeRegions` | Free region count at shrink evaluation time | Yes (null on expansion path) | Used to compute safe shrink amount: shrink is bounded by available free regions |
+| `regionsNeededForAlloc` | Regions needed for allocation headroom at shrink time | Yes (null on expansion path) | Safety floor: shrink never takes more than `freeRegions - regionsNeededForAlloc` |
+
+#### What it is used for
+
+G1 adjusts the committed heap between pauses based on GC CPU usage vs. a target derived from `GCTimeRatio`. The existing `jdk.G1HeapSummary` shows you the result (heap size before and after) but not **why** the resize happened or whether the policy's threshold was met. This event answers:
+
+- Is G1 expanding/shrinking the heap in response to GC load, or is it at the limit?
+- Is the `GCTimeRatio` flag configured to match your workload? If `shortTermGcCpuUsagePct` consistently exceeds `upperThresholdPct` but `atLimit=true`, the heap is constrained — raise `-Xmx`. If it consistently stays below `lowerThresholdPct`, the heap is oversized.
+- Is the sigmoid scaling (`scaleFactorPct`) producing aggressive shrinks that cause repeated expand/shrink oscillation?
+
+**Key diagnosis**: `resizeBytes=0` on every pause means the deviation counter never crossed the expand or shrink threshold — either the heap is right-sized, or `G1CPUUsageExpandThreshold`/`G1CPUUsageShrinkThreshold` are too high.
 
 #### Why existing events don't cover this
 
@@ -968,19 +1092,26 @@ The proposed event has 22 fields. Each rule populates only 3–5 of them; most f
 
 #### Recommended redesign: per-tick summary event
 
-Emit one event per director tick with ~6 fields:
+Emit one event per director tick with ~6 fields. The `start_gc()` function at [`zDirector.cpp:820`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L820) calls both `make_major_gc_decision()` (line 822) and `make_minor_gc_decision()` (line 828) and receives their `GCCause::Cause` return values — both results are available at a single point, making it a clean single-emission-point for the summary.
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `generation` | `"Young"` / `"Old"` | No |
-| `triggeredMinorRule` | String (rule name), null if no minor GC triggered | Yes |
-| `triggeredMajorRule` | String (rule name), null if no major GC triggered | Yes |
-| `timeUntilMinorOOM` | From alloc-rate rule; null if alloc-rate rule not triggered | Yes |
-| `minorFreeBytes` | From alloc-rate/high-usage rules | Yes |
-| `majorFreePercent` | From high-usage/warmup rules | Yes |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Tick frequency check |
+| `triggeredMinorRule` | `GCCause::Cause` name from `make_minor_gc_decision()` return — null if `_no_gc` | Yes | Which pressure caused the minor GC: `"_z_timer"` (periodic), `"_z_allocation_rate"` (memory pressure), `"_z_high_usage"` (heap nearly full) |
+| `triggeredMajorRule` | `GCCause::Cause` name from `make_major_gc_decision()` return — null if `_no_gc` | Yes | `"_z_warmup"` (early startup), `"_z_proactive"` (idle cleanup), `"_z_allocation_rate"` (escalated from minor), `"_z_timer"` |
+| `timeUntilMinorOOM` | From alloc-rate rule (`rule_minor_allocation_rate_dynamic`): `time_until_oom` computed from allocation rate model | Yes | Seconds until OOM at current allocation rate; null if alloc-rate rule was not evaluated. Low value = imminent allocation failure |
+| `minorFreeBytes` | Available young-gen bytes from alloc-rate/high-usage rules | Yes | Remaining headroom; compare against `ZAllocationSpikeTolerance` |
+| `majorFreePercent` | Old-gen free fraction from high-usage/warmup rules | Yes | Overall heap headroom for old gen |
 
-This design retains the key observability (which rule triggered, what the urgency signal was) without the sparse-field problem.
+#### What it is used for
+
+ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (default 1s) and decides whether to start a young or old collection. Unlike G1's reactive model, ZGC is proactively managed: it starts GC **before** allocation stalls by predicting time-until-OOM. Without this event, you have no visibility into ticks where the director evaluated rules but decided not to collect — leaving you unable to distinguish "no pressure" from "pressure but another GC was already running" from "timer not due yet."
+
+**Key diagnostic patterns**:
+- `triggeredMinorRule="_z_allocation_rate"` with decreasing `timeUntilMinorOOM` → increasing allocation pressure; if `timeUntilMinorOOM < typical_gc_duration`, allocation stalls are imminent.
+- `triggeredMajorRule="_z_allocation_rate"` → minor GC was not sufficient to relieve pressure; ZGC is escalating to a major collection. This should be rare — frequent occurrence means the young gen is too small.
+- All ticks showing both rules null (no GC triggered) → ZGC is idle; heap usage is low relative to capacity. Expected during low-load periods.
+- `triggeredMajorRule="_z_warmup"` in steady state → warmup period was miscalibrated or the JVM restarted; this rule should only fire during initial heap fill.
 
 #### Current 22-field design (full reference — not for upstream proposal as-is)
 
@@ -1044,27 +1175,38 @@ GC pause thread (within PSScavenge::invoke)
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `throughput` | `mutator_time_percent()` — windowed estimate | No |
-| `minorPauseMs` | `minor_gc_time_estimate()*1000` (major GC NOT included) | No |
-| `pauseGoalMs` | `_gc_pause_goal_sec*1000` (from `MaxGCPauseMillis`) | No |
-| `gcDistanceSec` | `_gc_distance_seconds_seq.davg()` — average | No |
-| `gcDistanceSecLast` | `_gc_distance_seconds_seq.last()` | No |
-| `promotedBytesEstimate` | `_avg_promoted->padded_average()` — smoothed and padded | No |
-| `promotedBytesLast` | `_promoted_bytes.last()` | No |
-| `survivorOverflow` | Boolean: objects bypassed survivor to old gen | No |
-| `desiredEden` | Captured at `PSYoungGen::compute_desired_sizes()` call site | No |
-| `desiredSurvivor` | Captured at `PSYoungGen::compute_desired_sizes()` call site | No |
-| `throughputEdenIncrease` | Throughput-increase branch only | Yes (null on pause-reduction branch) |
-| `oldGenFree` | From `compute_old_gen_shrink_bytes()` | No |
-| `minFreeBytes` | Old gen minimum free threshold (10-min promotion rate lookahead) | No |
-| `shrinkBytes` | Old gen shrink amount; 0 if no shrink | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Correlate with `jdk.GarbageCollection` |
+| `throughput` | `mutator_time_percent()` — `(total_time - gc_time) / total_time`, windowed average | No | **Primary goal metric**: below `1 - 1/(1+GCTimeRatio)` → algorithm will try to enlarge eden. Compare against `throughputGoal` implicit in `GCTimeRatio` |
+| `minorPauseMs` | `minor_gc_time_estimate() * 1000` — smoothed minor GC time, minor only, does NOT include major | No | **Pause goal input**: if this exceeds `pauseGoalMs` → algorithm enters pause-reduction branch and shrinks eden |
+| `pauseGoalMs` | `_gc_pause_goal_sec * 1000` from `MaxGCPauseMillis` (default 20ms) | No | The target pause time; `minorPauseMs > pauseGoalMs` drives eden shrink |
+| `gcDistanceSec` | `_gc_distance_seconds_seq.davg()` — smoothed average inter-GC interval | No | **Frequency indicator**: short distance = high GC frequency. `gcDistanceSec / minorPauseMs` ≈ throughput fraction |
+| `gcDistanceSecLast` | `_gc_distance_seconds_seq.last()` — raw last sample | No | Compare against `gcDistanceSec` to detect recent frequency change |
+| `promotedBytesEstimate` | `_avg_promoted->padded_average()` — padded (conservative) smoothed promotion estimate | No | **Old-gen pressure predictor**: high value means objects are flowing to old gen; if sustained, old-gen collections become frequent |
+| `promotedBytesLast` | `_promoted_bytes.last()` — actual bytes promoted last cycle | No | Compare against `promotedBytesEstimate`: a spike relative to estimate means a burst of promotions; smoothed value will lag |
+| `survivorOverflow` | Boolean: survivor space was full, forcing premature promotion to old gen | No | `true` → objects that are still young were forced into old gen. Indicates survivor too small; increase `SurvivorRatio` or reduce `MaxTenuringThreshold` |
+| `desiredEden` | Captured at `PSYoungGen::compute_desired_sizes()` — policy's desired eden size this cycle | No | Tracks policy evolution; compare to actual eden size from `jdk.PSHeapSummary` to see if heap size is constraining the policy |
+| `desiredSurvivor` | Captured at `PSYoungGen::compute_desired_sizes()` | No | Same — desired survivor size |
+| `throughputEdenIncrease` | Eden increase amount when taking the throughput-increase branch | Yes (null on pause-reduction branch) | Non-null means throughput was below goal and the policy is growing eden |
+| `oldGenFree` | From `compute_old_gen_shrink_bytes()` — current old gen free bytes | No | How much headroom exists in old gen |
+| `minFreeBytes` | 10× `_promotion_rate_bytes_per_sec` × minor GC time — lookahead floor for old gen | No | Old gen will not be shrunk below `minFreeBytes`; if `oldGenFree < minFreeBytes`, no shrink occurs |
+| `shrinkBytes` | Old gen shrink amount; 0 if no shrink | No | Non-zero → policy is actively shrinking old gen; risk of promotion failure if promotion rate spikes |
 
 **DROPPED fields**:
-- `throughputGoal`: re-derivable from `GCTimeRatio`, available from `jdk.GCConfiguration`.
-- `promotionRateEstimate`, `promotionRateLast`: derivable as `promotedBytes / gcDistance`.
+- `throughputGoal`: equals `1 - 1/(1+GCTimeRatio)` — derivable from `jdk.GCConfiguration.gcTimeRatio` without needing a new field.
+- `promotionRateEstimate`, `promotionRateLast`: derivable as `promotedBytes / gcDistance` from existing fields.
+
+#### What it is used for
+
+Parallel GC's adaptive size policy implements a feedback control loop that resizes eden, survivor, and old gen each young collection to meet two competing goals: throughput (mutator time fraction) and pause time (`MaxGCPauseMillis`). Without this event, `jdk.PSHeapSummary` shows you the resulting sizes but not the reasoning — you cannot tell whether the policy is throughput-limited or pause-limited, or why the old gen is expanding.
+
+**Diagnosis patterns**:
+- `survivorOverflow=true` repeatedly → survivor is too small; objects are bypassing it and aging into old gen prematurely. Increase `-XX:SurvivorRatio` or `-XX:MaxTenuringThreshold`.
+- `promotedBytesEstimate` growing monotonically → old-gen promotions are increasing; expect more frequent major GCs.
+- `minorPauseMs > pauseGoalMs` and `desiredEden < currentEden` → policy is actively shrinking eden to reduce pause time; if throughput also degrades, `MaxGCPauseMillis` is set too low.
+- `gcDistanceSec` very short (< 0.5s) → GC running more than twice per second; heap may be too small for workload.
+- `shrinkBytes > 0` frequently → policy is repeatedly shrinking old gen; watch for `promotedBytesEstimate` spikes that could overflow the shrunk space.
 
 #### Why existing events don't cover this
 
