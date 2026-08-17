@@ -4,6 +4,9 @@ Research documents supporting the proposed JFR events in `data/jfr-proposed-even
 
 ## Documents
 
+### [Shenandoah Tenuring Threshold](shenandoah-tenuring-threshold.md)
+How Shenandoah generational mode dynamically computes the tenuring threshold using mortality rate analysis. Covers the age census mechanism, the `compute_tenuring_threshold()` algorithm, `ShenandoahGenerationalCensusIgnoreOlderCohorts`, dark matter handling, and why this differs from G1/Parallel's static `MaxTenuringThreshold`. Supports `jdk.ShenandoahTenuringThreshold`.
+
 ### [G1 Concurrent Refinement](g1-concurrent-refinement.md)
 How G1's dirty-card queue and concurrent refinement threads work. Covers the two distinct log sites (`print_refinement_stats` vs `adjust_threads_wanted`), card categories, the JDK 25 write barrier redesign (JEP 522), and why `jdk.G1ConcurrentRefinementSweep` + `jdk.G1ConcurrentRefinementPolicy` are needed.
 
@@ -38,14 +41,15 @@ Why native heap trimming matters for containerised JVMs (RSS bloat from glibc ma
 | `jdk.PSAdaptiveSizePolicy` | high | Zero coverage |
 | `jdk.ShenandoahMMU` | high | Zero coverage; needs gcId for correlation |
 | `jdk.ShenandoahCollectionDecision` | high | Zero coverage; spans multiple code sites |
-| `jdk.ShenandoahCardStatistics` | high | Zero coverage; #ifndef PRODUCT guard needs resolution |
 | `jdk.G1HeapResize` | medium | Zero coverage; shrink-path fields need label annotation |
 | `jdk.ShenandoahReclaimProgress` | medium | Zero coverage; nullable fields for early-exit paths |
+| `jdk.ShenandoahTenuringThreshold` | medium | Zero coverage; dynamic mortality-rate algorithm unique to Shenandoah gen mode |
 | `jdk.ZNMethodRegistration` | low | Weak production motivation; tableRebuilt needs new instrumentation |
 | `jdk.StringDeduplicationStatistics` | low | **REDUNDANT** — jdk.StringDeduplication shipped in JDK 26 |
+| `jdk.ShenandoahCardStatistics` | **blocked** | **BLOCKED** — data source is `#ifndef PRODUCT` guarded in shenandoahCardStats.cpp; requires moving stats collection to product build first |
 
 ## Critique History
 
 - **Critique pass 1** (2026-08-17): Initial 5 events added (NativeHeapTrim, G1ConcurrentRefinement, ZDirectorRule, PSAdaptiveSizePolicy, ShenandoahCollectionDecision)
 - **Critique pass 2** (2026-08-17): G1ConcurrentRefinement split into Sweep+Policy; PSAdaptiveSizePolicy averaged/last fields; GCOverheadLimitExceeded diagnostic fields; ZDirectorRule early-exit semantics; ShenandoahMMU priority elevated; ShenandoahReclaimProgress redesigned as flat event; ZNMethodRegistration tableRebuilt added; ShenandoahCardStatistics gated to cumulative-only
-- **Critique pass 4** (2026-08-17): Confirmed 0 of 18 proposals covered by JDK 26/27-dev; promoted G1CollectionSetCandidates (corrected from working doc — two separate selection paths: marking + retained, candidateType discriminator, groups concept, num_expensive_regions not a boolean) and G1HeapResize (CPU-usage deviation counter, shrink-only fields labeled, lowerThreshold/upperThreshold/gcCpuUsageTarget added, reason field removed — not a source variable); added marginOfError to ShenandoahCollectionDecision (zScore belongs to post-cycle path, not decision point); ZForwardingRemembered rejected (log lines print address pairs not counts, no aggregation infrastructure); wrote g1-collection-set-candidates.md and g1-heap-resize.md research docs
+- **Critique pass 5** (2026-08-17): Local JDK source audit at /experiments/jdk — function names corrected in G1CollectionSet and G1HeapSizingPolicy replaces entries; ShenandoahCardStatistics log tag corrected (gc,remset) and demoted to 'blocked' priority (#ifndef PRODUCT guard confirmed in source — data not available in production builds, requires prerequisite code change); ShenandoahCollectionDecision replaces corrected (choose_collection_set_from_regiondata() has ShouldNotReachHere() body — replaced with actual log sites); ZDirectorRule replaces expanded with worker selection logs; new event jdk.ShenandoahTenuringThreshold promoted (shenandoahAgeCensus.cpp:258 log_info confirmed in product code outside #ifndef guard); wrote shenandoah-tenuring-threshold.md research doc

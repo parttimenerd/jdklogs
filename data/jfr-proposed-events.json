@@ -1,5 +1,5 @@
 {
-  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 26 oracle (196 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 (196 events) added jdk.StringDeduplication + jdk.FinalFieldMutation vs JDK 25 (194 events). JDK 27-dev master adds jdk.ShenandoahPromotionInformation. JDK-8365306 (NativeHeapTrim JFR, PR #26756, closed 2025-12): PR was blocked on ProcessSize umbrella design — narrow trim-only re-proposal recommended. G1 now has UseGCOverheadLimit (JDK-8212084, merged JDK 26, PR #27950) but no JFR event. JEP 521 Generational Shenandoah became production-ready in JDK 25. None of the other proposed events have upstream work in progress as of 2026-08-17. Critique pass 4 applied 2026-08-17: confirmed 0 of 18 proposals are covered by JDK 26/27-dev; promoted G1CollectionSetCandidates (corrected from working doc — two separate candidate paths: marking + retained) and G1HeapResize (drivers from g1HeapSizingPolicy.cpp) to JSON; added note on ShenandoahCollectionDecision zScore/marginOfError (belong to post-cycle path, NOT the decision point); ZForwardingRemembered kept as lower-priority note (log lines print addresses not counts, no aggregation infrastructure exists); G1PeriodicGCCheck / G1ConcurrentMarkTaskStats / GCWorkerConfiguration / G1RegionLivenessUpdate kept as notes in NEW_EVENTS.md.",
+  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 26 oracle (196 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 (196 events) added jdk.StringDeduplication + jdk.FinalFieldMutation vs JDK 25 (194 events). JDK 27-dev master adds jdk.ShenandoahPromotionInformation. JDK-8365306 (NativeHeapTrim JFR, PR #26756, closed 2025-12): PR was blocked on ProcessSize umbrella design — narrow trim-only re-proposal recommended. G1 now has UseGCOverheadLimit (JDK-8212084, merged JDK 26, PR #27950) but no JFR event. JEP 521 Generational Shenandoah became production-ready in JDK 25. None of the other proposed events have upstream work in progress as of 2026-08-17. Critique pass 4 applied 2026-08-17: confirmed 0 of 18 proposals are covered by JDK 26/27-dev; promoted G1CollectionSetCandidates and G1HeapResize. Critique pass 5 applied 2026-08-17 from LOCAL JDK SOURCE at /Users/i560383_1/code/experiments/jdk: (1) G1CollectionSet function names corrected (select_candidates_from_marking, select_candidates_from_retained); (2) G1HeapSizingPolicy function names corrected (young_collection_resize_amount, young_collection_shrink_amount); (3) ShenandoahCardStatistics log tag corrected to gc,remset (NOT gc) and confirmed log_info not log_debug; (4) ShenandoahCardStatistics #ifndef PRODUCT guard confirmed from source; (5) ShenandoahCollectionDecision replaces corrected: choose_collection_set_from_regiondata() has ShouldNotReachHere() body — replaced with actual log site in choose_collection_set_from_regiondata() caller; added Adaptive CSet Selection log; (6) ZDirectorRule: added Select Minor GC Workers log lines to replaces; (7) New high-value event candidate discovered: jdk.ShenandoahTenuringThreshold (shenandoahAgeCensus.cpp:258 log_info(gc,age)); (8) PSAdaptiveSizePolicy compute_tenuring_threshold() log confirmed as debug-level, already captured by existing jdk.TenuringDistribution event for Parallel GC.",
   "generatedFor": "trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info",
   "proposed": [
     {
@@ -27,9 +27,10 @@
     {
       "event": "jdk.ShenandoahCardStatistics",
       "label": "Shenandoah Card Statistics",
-      "priority": "high",
+      "priority": "blocked",
+      "status": "BLOCKED — source code gate. The ShenandoahCardStats::log() method is wrapped in #ifndef PRODUCT (confirmed: shenandoahCardStats.cpp lines 31-42). This means the data is NOT available in production JVM builds. A JFR event proposal would need to FIRST move the data collection out of the #ifndef PRODUCT guard into product code. This is a prerequisite code change, not just an event proposal. Until that upstream change is made, this event cannot fire in production. The data itself (dirty/clean card distribution, alternation count) remains valuable for generational Shenandoah observability.",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
-      "rationale": "Shenandoah generational (only, JEP 521 production-ready in JDK 25) remembered-set card scanning emits cumulative dirty/clean card statistics per GC cycle with no JFR event. IMPORTANT: the log() method is wrapped in #ifndef PRODUCT — this event would only fire in debug/fastdebug builds unless the JFR emission point is moved to a product-build path. The per-worker stats are gated behind ShenandoahEnableCardStats (non-product); this event emits only the cumulative aggregate. dirtyScannedObjects maps to _dirty_scan_obj_cnt — the count of heap objects visited as a result of dirty card scans (distinct from dirtyCards = card-table slot count). maxConsecutiveDirtyCards reflects card-table clustering that affects scan efficiency.",
+      "rationale": "Shenandoah generational (only, JEP 521 production-ready in JDK 25) remembered-set card scanning emits cumulative dirty/clean card statistics per GC cycle with no JFR event. IMPORTANT: the log() method is wrapped in #ifndef PRODUCT (confirmed from source: lines 31-42 in shenandoahCardStats.cpp) — this event would only fire in debug/fastdebug builds unless the JFR emission point is moved to a product-build path. Log tag is gc,remset (NOT gc or gc,ergo). Log level is log_info (NOT log_debug). The per-worker stats are gated behind ShenandoahEnableCardStats (non-product); this event emits only the cumulative aggregate. dirtyScannedObjects maps to _dirty_scan_obj_cnt — the count of heap objects visited as a result of dirty card scans (distinct from dirtyCards = card-table slot count). maxConsecutiveDirtyCards reflects card-table clustering that affects scan efficiency. _alternation_cnt confirmed as exact field name in shenandoahCardStats.hpp.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "dirtyCards", "label": "Dirty Card Table Slots (_dirty_card_cnt)" },
@@ -42,7 +43,7 @@
       "replaces": [
         {
           "file": "src/hotspot/share/gc/shenandoah/shenandoahCardStats.cpp",
-          "function": "void ShenandoahCardStats::log() const  [#ifndef PRODUCT guarded]",
+          "function": "void ShenandoahCardStats::log() const  [#ifndef PRODUCT guarded; log tag: gc,remset; level: log_info]",
           "logLine": "Card stats: dirty %zu (max run: %zu), clean %zu (max run: %zu), dirty scans/objs %zu"
         },
         {
@@ -302,32 +303,32 @@
       "replaces": [
         {
           "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
-          "function": "void G1CollectionSet::add_marking_candidates()",
+          "function": "double G1CollectionSet::select_candidates_from_marking(double time_remaining_ms)",
           "logLine": "Start adding marking candidates to collection set. Min %u regions, max %u regions, available %u regions (%u groups), time remaining %1.2fms, optional threshold %1.2fms"
         },
         {
           "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
-          "function": "void G1CollectionSet::add_marking_candidates()",
+          "function": "double G1CollectionSet::select_candidates_from_marking(double time_remaining_ms)",
           "logLine": "Finish adding marking candidates to collection set. Initial: %u regions (%u groups), optional: %u regions (%u groups), predicted initial time: %1.2fms, predicted optional time: %1.2fms, time remaining: %1.2fms"
         },
         {
           "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
-          "function": "void G1CollectionSet::add_marking_candidates()",
+          "function": "double G1CollectionSet::select_candidates_from_marking(double time_remaining_ms)",
           "logLine": "Added %u marking candidates to collection set although the predicted time was too high."
         },
         {
           "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
-          "function": "void G1CollectionSet::add_marking_candidates()",
+          "function": "double G1CollectionSet::select_candidates_from_marking(double time_remaining_ms)",
           "logLine": "Marking candidates exhausted."
         },
         {
           "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
-          "function": "void G1CollectionSet::add_retained_candidates()",
+          "function": "void G1CollectionSet::select_candidates_from_retained(double time_remaining_ms)",
           "logLine": "Start adding retained candidates to collection set. Min %u regions, available %u regions (%u groups), time remaining %1.2fms, optional remaining %1.2fms"
         },
         {
           "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
-          "function": "void G1CollectionSet::add_retained_candidates()",
+          "function": "void G1CollectionSet::select_candidates_from_retained(double time_remaining_ms)",
           "logLine": "Finish adding retained candidates to collection set. Initial: %u, optional: %u, pinned: %u, predicted initial time: %1.2fms, predicted optional time: %1.2fms, time remaining: %1.2fms optional time remaining %1.2fms"
         },
         {
@@ -360,12 +361,12 @@
       "replaces": [
         {
           "file": "src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp",
-          "function": "size_t G1HeapSizingPolicy::resize_amount()",
+          "function": "size_t G1HeapSizingPolicy::young_collection_resize_amount(bool& expand, size_t allocation_word_size)",
           "logLine": "Heap resize: short term GC CPU usage %1.2f%% long term GC CPU usage %1.2f%% lower threshold %1.2f%% upper threshold %1.2f%% GC CPU usage target %1.2f%% at limit %s resize by %zuB expand %s"
         },
         {
           "file": "src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp",
-          "function": "size_t G1HeapSizingPolicy::shrink_amount()",
+          "function": "size_t G1HeapSizingPolicy::young_collection_shrink_amount(double cpu_usage_delta, size_t allocation_word_size)",
           "logLine": "Shrink log: scale factor %1.2f%% total free regions %u needed for alloc %u base targeted for shrinking %u resize_bytes %zd ( %zu regions)"
         }
       ]
@@ -442,6 +443,21 @@
           "file": "src/hotspot/share/gc/z/zDirector.cpp",
           "function": "ZDirector::rule_major_proactive(ZGenerationId id) — disabled branch",
           "logLine": "Rule Major: Proactive, UsedUntilEnabled: %zuMB, TimeUntilEnabled: %.3fs"
+        },
+        {
+          "file": "src/hotspot/share/gc/z/zDirector.cpp",
+          "function": "static double select_young_gc_workers(...) — not warm branch",
+          "logLine": "Select Minor GC Workers (Not Warm), GCWorkers: %.3f"
+        },
+        {
+          "file": "src/hotspot/share/gc/z/zDirector.cpp",
+          "function": "static double select_young_gc_workers(...) — try lowering branch",
+          "logLine": "Select Minor GC Workers (Try Lowering), AvoidOOMGCWorkers: %.3f, NextAvoidOOMGCWorkers: %.3f, LastGCWorkers: %.3f, GCWorkers: %.3f"
+        },
+        {
+          "file": "src/hotspot/share/gc/z/zDirector.cpp",
+          "function": "static double select_young_gc_workers(...) — normal branch",
+          "logLine": "Select Minor GC Workers (Normal), AvoidOOMGCWorkers: %.3f, LastGCWorkers: %.3f, GCWorkers: %.3f"
         }
       ]
     },
@@ -532,14 +548,50 @@
           "logLine": "Heuristics request to interrupt old for young collection accepted"
         },
         {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp",
+          "function": "void ShenandoahGenerationalControlThread::service_concurrent_normal_cycle(const ShenandoahGCRequest& request)",
+          "logLine": "Start GC cycle (%s)"
+        },
+        {
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
-          "function": "void ShenandoahOldHeuristics::choose_collection_set_from_regiondata()",
-          "logLine": "Old-gen is planning to %s its collection set from %u/%u candidate regions"
+          "function": "bool ShenandoahOldHeuristics::add_old_regions_to_cset(ShenandoahCollectionSet* set) [called from choose_collection_set_from_regiondata() caller]",
+          "logLine": "Choose old regions for mixed collection: old evacuation budget: , candidates: %u"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
+          "function": "void ShenandoahOldHeuristics::prepare_for_old_collections()",
+          "logLine": "Old-Gen Immediate Garbage: over %zu regions"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
+          "function": "void ShenandoahAdaptiveHeuristics::choose_collection_set_from_regiondata(...)",
+          "logLine": "Adaptive CSet Selection. Target Free: , Actual Free: , Max Evacuation: , Min Garbage: "
         },
         {
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
           "function": "void ShenandoahAdaptiveHeuristics::adjust_margin_of_error(double amount)",
           "logLine": "Margin of error now %.2f"
+        }
+      ]
+    },
+    {
+      "event": "jdk.ShenandoahTenuringThreshold",
+      "label": "Shenandoah Tenuring Threshold Adjustment",
+      "priority": "medium",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
+      "rationale": "Shenandoah generational mode tracks object ages and dynamically adjusts the tenuring threshold (the age at which young objects are promoted to old generation). shenandoahAgeCensus.cpp emits a log_info(gc, age) line whenever the threshold changes. This is analogous to jdk.TenuringDistribution (which exists for G1/Parallel) but for Shenandoah's generational mode — and captures THRESHOLD CHANGES (not per-age-bucket sizes). ShenandoahGenerationalMinTenuringAge and ShenandoahGenerationalMaxTenuringAge bound the range. Note: jdk.TenuringDistribution already covers G1 and Parallel GC for per-bucket sizes; this event is Shenandoah-specific and covers only the computed threshold value, not the full age histogram (which would require a separate event). Production value: repeated threshold decreases (toward minTenuringAge) indicate young gen collection pressure; threshold increases (toward maxTenuringAge) indicate stable survivor space usage.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "int", "name": "gcId", "label": "GC Identifier (correlates with jdk.GarbageCollection)" },
+        { "type": "long", "name": "tenuringThreshold", "label": "New Tenuring Threshold (age in GC cycles; objects older than this are promoted to old gen)" },
+        { "type": "long", "name": "minTenuringAge", "label": "Minimum Tenuring Age (ShenandoahGenerationalMinTenuringAge flag)" },
+        { "type": "long", "name": "maxTenuringAge", "label": "Maximum Tenuring Age (ShenandoahGenerationalMaxTenuringAge flag)" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahAgeCensus.cpp",
+          "function": "void ShenandoahAgeCensus::update_tenuring_threshold()",
+          "logLine": "New tenuring threshold %zu (min %zu, max %zu)"
         }
       ]
     }
