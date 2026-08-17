@@ -390,12 +390,15 @@ function setupConfigHint(): void {
 }
 
 async function main(): Promise<void> {
+  // Snapshot the URL hash synchronously before any await so async work (detectVersions fetches)
+  // cannot race a page-load navigation and see an empty hash.
+  const url = readUrlState();
+
   // Probe which versions CI has actually generated, before touching the selector or the URL state.
   VERSIONS = await detectVersions();
   state.version = VERSIONS[0];
 
   // restore shareable state from the URL hash (validate against detected versions/known GCs)
-  const url = readUrlState();
   if (url.version && VERSIONS.includes(url.version)) state.version = url.version;
   if (url.gc && GCS.includes(url.gc)) state.gc = url.gc;
   if (url.platform && PLATFORM_VALUES.includes(url.platform)) state.platform = url.platform;
