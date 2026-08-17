@@ -234,7 +234,7 @@ Allocating application thread
 | `freeSpacePercent` | G1: `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())` ([`g1CollectedHeap.cpp:1003`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1003)) | Yes | No | Yes (null for Parallel) |
 | `freeSpaceYoungPercent` | Parallel: `percent_of(_young_gen->free_in_bytes(), _young_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:437`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L437)) | No | Yes | Yes (null for G1) |
 | `freeSpaceOldPercent` | Parallel: `percent_of(_old_gen->free_in_bytes(), _old_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:438`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L438)) | No | Yes | Yes (null for G1) |
-| `consecutiveViolations` | `_gc_overhead_counter`; equals `GCOverheadLimitThreshold` (default 5) at throw time — counter incremented in `update_gc_overhead_counter()` at each safepoint, checked via `gc_overhead_limit_exceeded()` | Yes | Yes | No |
+| `consecutiveViolations` | `_gc_overhead_counter`; equals `GCOverheadLimitThreshold` (fixed at 5 — this is a `develop` flag, not configurable in production builds) at throw time — counter incremented in `update_gc_overhead_counter()` at each safepoint, checked via `gc_overhead_limit_exceeded()` | Yes | Yes | No |
 
 #### Why existing events don't cover this
 
@@ -254,7 +254,7 @@ Allocating application thread
 
 1. G1 and Parallel have different free-space field shapes. The nullable pattern is acceptable in JFR but upstream may want two separate events (`jdk.G1GCOverheadLimitExceeded`, `jdk.ParallelGCOverheadLimitExceeded`) to avoid the impedance mismatch. The trade-off: separate events are cleaner but require more boilerplate.
 2. `gcId` should use `GCId::peek() - 1` (last assigned GC id). `GCId::peek()` returns `_next_id` (the id to be assigned to the NEXT GC), so the last completed GC id is `peek() - 1`. If `peek() == 0` (no GC has run), the field should be `undefined`. Alternatively, use `GCId::current_or_undefined()` if the throw-point happens to be on a GC thread, but at `satisfy_failed_allocation()` the thread is the allocating application thread, so `current()` would assert — `peek()-1` is the correct mechanism.
-3. `consecutiveViolations` is always equal to `GCOverheadLimitThreshold` at throw time (the counter must reach the threshold to throw). Is this field useful, or is it a constant disguised as a variable?
+3. `consecutiveViolations` is always equal to `GCOverheadLimitThreshold` at throw time (the counter must reach the threshold to throw). Furthermore, `GCOverheadLimitThreshold = 5` is a `develop` flag — it cannot be changed in production builds. This means `consecutiveViolations` is always 5 at throw time: it is a constant disguised as a variable. The field could be omitted, or replaced with a `thresholdViolations` boolean (was threshold hit = always true). Alternatively, keep it to make the event schema self-documenting even if the value is always 5.
 4. Both GC implementations call `update_gc_overhead_counter()` (G1) / `check_gc_overhead_limit()` (Parallel) from `satisfy_failed_allocation()` and then check the result before throwing. The event must fire **after** the counter update and **before** returning null — i.e., at the `if (gc_overhead_limit_exceeded())` block at line 1109 / line 506 respectively. The `long_term_gc_time_ratio` and free-space values computed in the same update call are still in-scope locals at that point.
 
 ---
@@ -1313,7 +1313,7 @@ GC pause thread (within PSScavenge::invoke)
 | `startTime` | Standard JFR | No | Correlate with `jdk.GarbageCollection` |
 | `throughput` | `mutator_time_percent()` — `(total_time - gc_time) / total_time`, windowed average | No | **Primary goal metric**: below `1 - 1/(1+GCTimeRatio)` → algorithm will try to enlarge eden. Compare against `throughputGoal` implicit in `GCTimeRatio` |
 | `minorPauseMs` | `minor_gc_time_estimate() * 1000` — smoothed minor GC time, minor only, does NOT include major | No | **Pause goal input**: if this exceeds `pauseGoalMs` → algorithm enters pause-reduction branch and shrinks eden |
-| `pauseGoalMs` | `_gc_pause_goal_sec * 1000` from `MaxGCPauseMillis` (default 20ms) | No | The target pause time; `minorPauseMs > pauseGoalMs` drives eden shrink |
+| `pauseGoalMs` | `_gc_pause_goal_sec * 1000` from `MaxGCPauseMillis` (default is `max_uintx-1` = essentially unlimited unless set) | No | The target pause time; `minorPauseMs > pauseGoalMs` drives eden shrink |
 | `gcDistanceSec` | `_gc_distance_seconds_seq.davg()` — smoothed average inter-GC interval | No | **Frequency indicator**: short distance = high GC frequency. `gcDistanceSec / minorPauseMs` ≈ throughput fraction |
 | `gcDistanceSecLast` | `_gc_distance_seconds_seq.last()` — raw last sample | No | Compare against `gcDistanceSec` to detect recent frequency change |
 | `promotedBytesEstimate` | `_avg_promoted->padded_average()` — padded (conservative) smoothed promotion estimate | No | **Old-gen pressure predictor**: high value means objects are flowing to old gen; if sustained, old-gen collections become frequent |
