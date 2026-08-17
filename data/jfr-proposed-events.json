@@ -1,5 +1,5 @@
 {
-  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 25 oracle (jfr metadata, 194 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract.",
+  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 25 oracle (jfr metadata, 194 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 adds jdk.StringDeduplication (partial overlap — see rationale on StringDeduplicationStatistics). JDK 27 adds jdk.ShenandoahPromotionInformation (in metadata.xml, not yet released). JDK-8365306 (In Progress) will add a native-heap-trim JFR event. None of the other 9 proposed events have upstream work in progress.",
   "generatedFor": "trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info",
   "proposed": [
     {
@@ -7,7 +7,7 @@
       "label": "String Deduplication Statistics",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed"],
-      "rationale": "Concurrent string deduplication emits a rich per-cycle summary with no JFR analogue. JDK 26's jdk.StringDeduplication is a coarse counter; this per-cycle statistics summary (inspected/deduped/new-unknown counts + byte totals + ratio) is still uncovered.",
+      "rationale": "JDK 26 added jdk.StringDeduplication (JDK-8037914) with coarse counters (inspectedCount, deduplicatedCount, lastDeduplicated, totalDeduplicated). This per-cycle statistics summary event carries what the log line still emits but JDK 26's event does not: per-cycle new-unknown counts, byte totals (dedupedBytes, newUnknownBytes, totalDedupedBytes, totalNewUnknownBytes), and the deduplication ratio. Consider whether the remaining fields justify a second event or whether JDK 26's jdk.StringDeduplication should be extended instead.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "duration", "label": "Duration" },
@@ -89,11 +89,11 @@
       ]
     },
     {
-      "event": "jdk.ShenandoahEvacuationProgress",
-      "label": "Shenandoah Evacuation Progress",
+      "event": "jdk.ShenandoahReclaimProgress",
+      "label": "Shenandoah Reclaim Progress",
       "priority": "medium",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
-      "rationale": "Shenandoah's metrics snapshot decides whether a cycle made 'good progress' across free space, used space, and internal/external fragmentation, printing actual-vs-needed per dimension. No JFR event carries this.",
+      "rationale": "shenandoahMetrics.cpp's ShenandoahMetricsSnapshot::is_good_progress() evaluates free-space, used-space, internal fragmentation, and external fragmentation progress after each cycle and logs whether each dimension met its threshold. No JFR event carries this cross-dimension progress check. The event fires once per cycle with one row per dimension (dimension='free'/'used'/'internal-frag'/'external-frag').",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "String", "name": "dimension", "label": "Dimension" },
@@ -164,6 +164,189 @@
           "file": "src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp",
           "function": "HeapWord* ParallelScavengeHeap::satisfy_failed_allocation(si",
           "logLine": "GC Overhead Limit exceeded too often (%zu)."
+        }
+      ]
+    },
+    {
+      "event": "jdk.NativeHeapTrim",
+      "label": "Native Heap Trim",
+      "priority": "high",
+      "category": ["Java Virtual Machine", "Runtime"],
+      "rationale": "The JVM periodically calls malloc_trim/madvise to return RSS to the OS after GC. The log line (trimNativeHeap.cpp) records before/after RSS and delta, but no JFR event carries this. Especially valuable on containerised deployments where RSS spikes are monitored closely. detailsAvailable=false when /proc/self/status is unavailable (non-Linux or restricted containers). JDK-8365306 (In Progress) confirms upstream interest: its design explicitly requests an event-driven trim event with 'when, how much RSS recovered, and duration'.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "long", "name": "duration", "label": "Duration" },
+        { "type": "long", "name": "trimCount", "label": "Trim Count" },
+        { "type": "long", "name": "beforeBytes", "label": "RSS Before Trim (bytes)" },
+        { "type": "long", "name": "afterBytes", "label": "RSS After Trim (bytes)" },
+        { "type": "long", "name": "deltaBytes", "label": "RSS Delta (bytes, negative = freed)" },
+        { "type": "boolean", "name": "detailsAvailable", "label": "Details Available" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/runtime/trimNativeHeap.cpp",
+          "function": "void NativeHeapTrimmer::Trimmer::execute_trim_and_log()",
+          "logLine": "Periodic Trim (%zu): %zuK->%zuK (%c%zuK) %.3fms"
+        },
+        {
+          "file": "src/hotspot/share/runtime/trimNativeHeap.cpp",
+          "function": "void NativeHeapTrimmer::Trimmer::execute_trim_and_log()",
+          "logLine": "Periodic Trim (%zu): complete (no details) %.3fms"
+        }
+      ]
+    },
+    {
+      "event": "jdk.G1ConcurrentRefinement",
+      "label": "G1 Concurrent Refinement Cycle",
+      "priority": "high",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
+      "rationale": "G1's concurrent refinement thread sweeps dirty cards between pauses. The gc+refine and gc+ergo+refine log tags emit per-sweep card counts, thread counts, pending-card targets, and rate predictions with no JFR analogue. Currently only pause-level refined-cards totals appear in jdk.GCPhasePause. This event enables correlating refinement throughput with subsequent pause work. The key log line (g1ConcurrentRefine.cpp:612) shows: wanted threads, total pending, pending-from-gc, card stats, and timing sub-totals.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "long", "name": "duration", "label": "Duration" },
+        { "type": "double", "name": "preSweepMs", "label": "Pre-Sweep Duration (ms)" },
+        { "type": "double", "name": "cardRefineMs", "label": "Card Refinement Duration (ms)" },
+        { "type": "long", "name": "cardsScanned", "label": "Cards Scanned" },
+        { "type": "long", "name": "cardsClean", "label": "Cards Already Clean" },
+        { "type": "long", "name": "cardsNotClean", "label": "Cards Not Clean" },
+        { "type": "long", "name": "cardsNotParsable", "label": "Cards Not Parsable" },
+        { "type": "long", "name": "cardsRefersToCset", "label": "Cards Referring to CSet" },
+        { "type": "long", "name": "cardsStillRefersToCset", "label": "Cards Still Referring to CSet" },
+        { "type": "long", "name": "cardsPending", "label": "Cards Pending After Sweep" },
+        { "type": "int", "name": "threadsWanted", "label": "Refinement Threads Wanted" },
+        { "type": "long", "name": "pendingCardsTarget", "label": "Pending Cards Target" },
+        { "type": "double", "name": "predictedRefineRate", "label": "Predicted Refinement Rate (cards/ms)" },
+        { "type": "double", "name": "dirtiedCardRate", "label": "Dirtied Card Rate (cards/ms)" },
+        { "type": "double", "name": "goalMs", "label": "Refinement Goal (ms)" },
+        { "type": "boolean", "name": "exceededGoal", "label": "Exceeded Goal" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp",
+          "function": "void G1ConcurrentRefine::log_refinement_stats()",
+          "logLine": "Concurrent refinement: %.3fms, refined %zu, precleaned %zu, dirtied %zu"
+        },
+        {
+          "file": "src/hotspot/share/gc/g1/g1Policy.cpp",
+          "function": "void G1Policy::update_refinement_stats()",
+          "logLine": "Concurrent refinement: wanted %u, pending cards target %zu, predicted refine rate %.2f, dirtied card rate %.2f, goal %.2fms%s"
+        }
+      ]
+    },
+    {
+      "event": "jdk.ZDirectorRule",
+      "label": "ZGC Director Rule Evaluation",
+      "priority": "high",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "Z"],
+      "rationale": "ZGC's director evaluates up to seven heuristic rules each cycle (Timer, AllocationRate, HighUsage, Warmup, Proactive, SoftReference, NMethodFlush) to decide whether to trigger GC. The gc+director log tag records per-rule evaluation with context data (allocation rate, free bytes, time estimates). No JFR event exposes this decision logic; correlating GC triggers with allocation pressure, cycle timing, or free-space thresholds is impossible without log parsing. generation='Minor'/'Major' matches ZGC's generational terminology from the log prefix 'Rule Minor:' / 'Rule Major:'. Sparse fields (e.g. maxAllocRate) are zero/NaN for rules that don't evaluate them.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "String", "name": "generation", "label": "Generation (Minor/Major)" },
+        { "type": "String", "name": "rule", "label": "Rule Name (Timer/AllocationRate/HighUsage/Warmup/Proactive)" },
+        { "type": "boolean", "name": "triggered", "label": "Rule Triggered" },
+        { "type": "double", "name": "maxAllocRate", "label": "Max Allocation Rate (MB/s)" },
+        { "type": "long", "name": "freeBytes", "label": "Free Bytes" },
+        { "type": "double", "name": "timeUntilGC", "label": "Time Until GC (s)" },
+        { "type": "double", "name": "timeUntilOOM", "label": "Time Until OOM (s)" },
+        { "type": "double", "name": "gcDuration", "label": "Estimated GC Duration (s)" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/z/zDirector.cpp",
+          "function": "ZDirector::rule_timer(ZGenerationId id)",
+          "logLine": "Rule: Timer, Triggered: %s"
+        },
+        {
+          "file": "src/hotspot/share/gc/z/zDirector.cpp",
+          "function": "ZDirector::rule_allocation_rate_dynamic(ZGenerationId id)",
+          "logLine": "Rule: Allocation Rate, Max Alloc Rate: %.1fMB/s, Free: %zuMB, GC time: %.3fs, Alloc time: %.3fs, Triggered: %s"
+        },
+        {
+          "file": "src/hotspot/share/gc/z/zDirector.cpp",
+          "function": "ZDirector::rule_high_usage(ZGenerationId id)",
+          "logLine": "Rule: High Usage, Free: %zuMB, Triggered: %s"
+        },
+        {
+          "file": "src/hotspot/share/gc/z/zDirector.cpp",
+          "function": "ZDirector::rule_proactive(ZGenerationId id)",
+          "logLine": "Rule: Proactive, Triggered: %s"
+        }
+      ]
+    },
+    {
+      "event": "jdk.PSAdaptiveSizePolicy",
+      "label": "Parallel GC Adaptive Size Policy",
+      "priority": "high",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "Parallel"],
+      "rationale": "Parallel GC's AdaptiveSizePolicy runs a feedback loop after each GC to resize eden and survivor spaces toward throughput and pause-time goals. The gc+ergo log tag emits the full policy state (throughput/pause deltas, promotion rate, overflow flag, desired sizes) but no JFR event captures this. Understanding why generation sizes oscillate or GC overhead increases currently requires log parsing.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "double", "name": "throughput", "label": "Measured Throughput" },
+        { "type": "double", "name": "throughputGoal", "label": "Throughput Goal" },
+        { "type": "double", "name": "pauseMs", "label": "Last GC Pause (ms)" },
+        { "type": "double", "name": "pauseGoalMs", "label": "Pause Goal (ms)" },
+        { "type": "double", "name": "gcDistance", "label": "GC Distance (s)" },
+        { "type": "double", "name": "gcDistanceGoal", "label": "GC Distance Goal (s)" },
+        { "type": "long", "name": "promotedBytes", "label": "Promoted Bytes" },
+        { "type": "double", "name": "promotionRate", "label": "Promotion Rate (MB/s)" },
+        { "type": "boolean", "name": "overflowing", "label": "Promotion Overflowing" },
+        { "type": "long", "name": "desiredEden", "label": "Desired Eden Size (bytes)" },
+        { "type": "long", "name": "desiredSurvivor", "label": "Desired Survivor Size (bytes)" },
+        { "type": "long", "name": "edenDelta", "label": "Eden Size Delta (bytes)" },
+        { "type": "long", "name": "oldGenFree", "label": "Old Gen Free Space (bytes)" },
+        { "type": "long", "name": "shrinkBytes", "label": "Old Gen Shrink Amount (bytes)" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp",
+          "function": "void PSAdaptiveSizePolicy::compute_eden_space_size(size_t youn",
+          "logLine": "Adaptive: throughput: %.3f, pause: %.1f ms, gc-distance: %.3f (%.3f) s, promoted: %.1f %s (%.1f %s), promotion-rate: %.1f M/s (%.1f M/s), overflowing: %s"
+        },
+        {
+          "file": "src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp",
+          "function": "void PSAdaptiveSizePolicy::compute_old_gen_free_space(size_t o",
+          "logLine": "AdaptiveSizePolicy::old generation size update: %zu"
+        },
+        {
+          "file": "src/hotspot/share/gc/parallel/psYoungGen.cpp",
+          "function": "void PSYoungGen::resize(size_t eden_size, size_t survivor_size",
+          "logLine": "PSYoungGen::resize: desired eden: %zu desired_survivor: %zu"
+        }
+      ]
+    },
+    {
+      "event": "jdk.ShenandoahCollectionDecision",
+      "label": "Shenandoah Collection Decision",
+      "priority": "high",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
+      "rationale": "Shenandoah generational mode runs a regulator/control FSM that decides each cycle whether to collect young, old, or global, whether to run a mixed collection, and whether to interrupt/resume/cancel an in-progress cycle. This high-level decision is spread across shenandoahRegulatorThread.cpp, shenandoahGenerationalControlThread.cpp, shenandoahOldHeuristics.cpp with no JFR event. The mixedCandidates, mixedRegionsSelected, and oldEvacuationBudget fields come from shenandoahOldHeuristics.cpp's choose_collection_set_from_regiondata(). Note: adaptive heuristic z-score and margin-of-error are computed in should_start_gc() before the regulator accepts the request; they belong in a separate jdk.ShenandoahAdaptiveTrigger event rather than here.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "String", "name": "decision", "label": "Decision (start-young/start-old/start-global/start-mixed/interrupt/resume/cancel)" },
+        { "type": "String", "name": "generation", "label": "Generation (Young/Old/Global)" },
+        { "type": "String", "name": "cause", "label": "GC Cause" },
+        { "type": "long", "name": "available", "label": "Available Bytes" },
+        { "type": "long", "name": "softMaxCapacity", "label": "Soft Max Capacity (bytes)" },
+        { "type": "int", "name": "mixedCandidates", "label": "Mixed Collection Candidates" },
+        { "type": "int", "name": "mixedRegionsSelected", "label": "Mixed Regions Selected" },
+        { "type": "long", "name": "oldEvacuationBudget", "label": "Old Evacuation Budget (bytes)" },
+        { "type": "int", "name": "defragRegions", "label": "Defragmentation Regions" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahRegulatorThread.cpp",
+          "function": "void ShenandoahRegulatorThread::regulator_loop()",
+          "logLine": "Regulator decided to start a GC cycle"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp",
+          "function": "ShenandoahGenerationalControlThread::handle_requested_gc()",
+          "logLine": "Starting a Young GC, requesting %s"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
+          "function": "void ShenandoahOldHeuristics::choose_collection_set_from_regiond",
+          "logLine": "Old-gen is planning to %s its collection set from %u/%u candidate regions"
         }
       ]
     }
