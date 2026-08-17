@@ -412,7 +412,7 @@ Trigger fields from: regulator thread → heuristic should_start_gc() calls
 | Field | Source | Nullable? |
 |---|---|---|
 | `startTime` | Standard JFR | No |
-| `decision` | Synthesized from GCMode enum: `"young"`, `"old"`, `"global"`, `"mixed"`, `"degenerated"`, `"full"`, `"interrupt_old_for_young"`, `"none"` | No |
+| `decision` | `gc_mode_name(gc_mode())` from `ShenandoahGenerationalControlThread` at [`shenandoahGenerationalControlThread.cpp:765`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L765): `"idle"`, `"normal"` (concurrent normal), `"degenerated"` (STW degenerated), `"full"` (STW full), `"old"` (servicing old), `"bootstrap"` (bootstrapping old) | No |
 | `generation` | `"Young"` / `"Old"` / `"Global"` | No |
 | `cause` | `shenandoah_concurrent_gc` / `metadata_GC_threshold` / `alloc_failure` / etc. | No |
 | `available` | Available bytes at decision time | No |
@@ -457,13 +457,15 @@ Shenandoah's generational heuristics make nuanced decisions — not just "heap i
 - `triggerType=fragmentation` with growing `fragmentationDensityPct` → old gen is becoming sparser; consider lowering `ShenandoahOldGarbageThreshold` to reclaim fragmented regions more eagerly.
 - `triggerType=growth` with `currentUsageBytes` >> `liveAtPrevMarkBytes` → promotions from young gen are accumulating in old gen faster than old GCs are running. Either increase old GC frequency or increase old-gen size.
 - `triggerType=expansion_failure` → old gen is at max size and cannot expand; imminent OOM unless `-Xmx` is increased or the live set shrinks.
-- `decision="interrupt_old_for_young"` frequently → young collections are pre-empting old collections; this is expected behavior but if old collections are never completing, old gen will fill.
+- `decision="old"` or `decision="bootstrap"` frequently → old-gen collections are running; if old gen is accumulating faster than being reclaimed, promotions are outpacing collection.
+- `decision="degenerated"` and then `decision="full"` on the next cycle → degenerated GC failed to make progress (check `jdk.ShenandoahReclaimProgress`), escalating to full compaction.
+- `decision="normal"` with `generation="Old"` unexpectedly frequent → old gen heuristics are triggering collections often; check trigger type and old-gen usage trends.
 
 #### Open questions / upstream concerns
 
 1. **Multi-site emission**: This event spans `service_concurrent_normal_cycle()` (control thread), `log_trigger()` (regulator thread), and `prepare_for_old_collections()` (old heuristics). Upstream will ask for a single emission point. The standard approach is to accumulate fields into a struct that is populated across the call chain and emitted at the control thread site. This is implementable but requires design work.
 2. **Trigger field separation**: The 6+ nullable adaptive trigger fields are a natural candidate for a separate `jdk.ShenandoahGCTrigger` event. Separating them makes each event simpler and avoids the sparse-field problem.
-3. **`decision` synthesis**: The `decision` string is not a single enum value from one place — it is synthesized from the GCMode enum at [`shenandoahGenerationalControlThread.hpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.hpp). The synthesis logic must be specified precisely in the patch.
+3. **`decision` from `gc_mode_name()`**: the `GCMode` enum has 7 values (`none`, `concurrent_normal`, `stw_degenerated`, `stw_full`, `bootstrapping_old`, `servicing_old`, `stopped`); `gc_mode_name()` at line 765 maps these to strings. The `concurrent_normal` mode covers both young, old, global, and mixed collections — the generation is identified separately via `request.generation->name()`. The `decision` field should use the raw `gc_mode_name()` value (simple and exact); a separate `generation` field captures young vs. old vs. global.
 
 ---
 
