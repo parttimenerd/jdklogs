@@ -110,11 +110,19 @@ Today, an operator can observe that `TrimNativeHeapInterval` is set, but has no 
 **File**: [`trimNativeHeap.cpp:150,155`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/trimNativeHeap.cpp#L150)  
 **Log tag**: `log_info(trimnative)` — info level, suitable for production use.
 
+**Exact log messages** (from [`trimNativeHeap.cpp:150`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/trimNativeHeap.cpp#L150)):
+```
+// When RSS details are available:
+log_info(trimnative)("Periodic Trim (%lu): %s->%s (%c%s) %.3fms", ...)
+// When RSS details are unavailable (non-Linux or restricted):
+log_info(trimnative)("Periodic Trim (%lu): complete (no details) %.3fms", ...)
+```
+
 **Call chain**:
 ```
 NativeHeapTrimmer background thread
   → wakes up every TrimNativeHeapInterval ms (default 1000ms on container JVMs)
-  → execute_trim_and_log()   [trimNativeHeap.cpp:150]
+  → execute_trim_and_log()   [trimNativeHeap.cpp:150](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/trimNativeHeap.cpp#L150)
 ```
 
 **Cadence**: Once per trim operation. Rate is controlled by `-XX:TrimNativeHeapInterval` (default 1000ms on container JVMs).
@@ -188,18 +196,22 @@ Two sites, one per GC implementation:
 
 **G1**: `G1CollectedHeap::satisfy_failed_allocation()`  
 [`g1CollectedHeap.cpp:1110`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1110)  
-Log: `log_info(gc)("GC Overhead Limit exceeded too often (%zu).")`
+Log: `log_info(gc)("GC Overhead Limit exceeded too often (%zu).", GCOverheadLimitThreshold)`
 
 **Parallel GC**: `ParallelScavengeHeap::satisfy_failed_allocation()`  
 [`parallelScavengeHeap.cpp:507`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L507)  
-Log: same string, same log tag.
+Log: `log_info(gc)("GC Overhead Limit exceeded too often (%zu).", GCOverheadLimitThreshold)` (identical string)
+
+**Counter-update log** (debug-tier, NOT the event site):  
+G1 [`g1CollectedHeap.cpp:1006`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1006): `log_debug(gc)("GC Overhead Limit: GC Time %f Free Space %f Counter %zu", ...)`  
+Parallel [`parallelScavengeHeap.cpp:440`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L440): `log_debug(gc)("GC Overhead Limit: GC Time %f Free Space Young %f Old %f Counter %zu", ...)`
 
 **Call chain (G1)**:
 ```
 Allocating application thread
   → allocation fast-path failure
   → attempt_allocation_humongous() or expand_heap_and_attempt_allocation()
-  → satisfy_failed_allocation()   [g1CollectedHeap.cpp:1110]
+  → satisfy_failed_allocation()   [g1CollectedHeap.cpp:1110](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1110)
   → fires when gc_overhead_limit_exceeded() returns true
 ```
 
@@ -207,7 +219,7 @@ Allocating application thread
 
 **Thread**: Allocating application thread (not a GC thread).
 
-**GCOverheadLimit feature**: Implemented in G1 via JDK-8212084, [PR #27950](https://github.com/openjdk/jdk/pull/27950), merged JDK 26. Also present in Parallel GC.
+**GCOverheadLimit feature**: Implemented in G1 via [JDK-8212084](https://bugs.openjdk.org/browse/JDK-8212084), [PR #27950](https://github.com/openjdk/jdk/pull/27950), merged JDK 26. Also present in Parallel GC.
 
 **Counter-update vs. throw-point distinction**: `update_gc_overhead_counter()` ([`g1CollectedHeap.cpp:995`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)) runs at each safepoint and logs the raw counter at `log_debug(gc)`. The JFR event belongs at the throw point — `satisfy_failed_allocation()` line 1109 — where `gc_overhead_limit_exceeded()` returns true and control flow is about to return null to the allocating thread. At that point, the final counter value, `long_term_gc_time_ratio`, and `free_space_percent` are all in scope.
 
@@ -266,29 +278,32 @@ No existing JFR event covers Shenandoah's GCU%/MU% breakdown.
 **End-of-cycle (log_info — primary)**:  
 `ShenandoahMmuTracker::update_utilization()`  
 [`shenandoahMmuTracker.cpp:107`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L107)  
+Log: `log_info(gc, ergo)("At end of %s: GCU: %.1f%%, MU: %.1f%% during period of %.3fs", ...)`  
 Log tag: `log_info(gc,ergo)` — info level.
 
 **Old marking increment (log_info)**:  
 `ShenandoahMmuTracker::record_old_marking_increment()`  
 [`shenandoahMmuTracker.cpp:134`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L134)  
+Log: `log_info(gc, ergo)("At end of %s: GCU: %.1f%%, MU: %.1f%% for duration %.3fs (totals to be subsumed in next gc report)", ...)`  
 Log tag: `log_info(gc,ergo)` — info level.
 
 **Periodic sample (log_debug — secondary, NOT in initial proposal)**:  
 `ShenandoahMmuTracker::report()`  
 [`shenandoahMmuTracker.cpp:173`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L173)  
+Log: `log_debug(gc)("Periodic Sample: GCU = %.3f%%, MU = %.3f%% during most recent %.1fs", ...)`  
 Log tag: `log_debug(gc)` — debug level. This path should NOT be bundled with the initial proposal.
 
 **Call chain (end-of-cycle)**:
 ```
 Shenandoah generational control thread
   → end of collection phase
-  → update_utilization()   [shenandoahMmuTracker.cpp:107]
+  → update_utilization()   [shenandoahMmuTracker.cpp:107](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L107)
 ```
 
 **Call chain (periodic, debug-tier)**:
 ```
 ShenandoahMmuTask::task()   [PeriodicTask at GCPauseIntervalMillis ~200ms]
-  → report()   [shenandoahMmuTracker.cpp:173]
+  → report()   [shenandoahMmuTracker.cpp:173](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L173)
 ```
 
 **Cadence**: Once per completed GC phase (end-of-cycle). Plus every ~200ms for the periodic path (excluded from initial proposal).
@@ -348,16 +363,23 @@ No existing JFR event captures Shenandoah's control-thread FSM decisions. `jdk.G
 **Primary (log_info)**:  
 `ShenandoahGenerationalControlThread::service_concurrent_normal_cycle()`  
 [`shenandoahGenerationalControlThread.cpp:374`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L374)  
-Log: `log_info(gc,ergo)("Start GC cycle (%s)")`
+Log: `log_info(gc, ergo)("Start GC cycle (%s)", request.generation->name())`
 
 **Trigger fields (log_info)**:  
 `ShenandoahHeuristics::log_trigger()`  
 [`shenandoahHeuristics.cpp:248`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahHeuristics.cpp#L248)  
-Resolves to `log_info(gc)` in production.
+Resolves to `log_info(gc)` in production. Example trigger log messages:
+```
+log_info(gc)("Trigger (Young): Anticipated GC duration (%.2f ms) is above the time for average allocation rate ...")
+log_info(gc)("Trigger (Young): Momentary spike consumption ... exceeds free headroom ...")
+log_info(gc)("Trigger (Old): Old has overgrown, live at end of previous OLD marking: ...")
+log_info(gc)("Trigger (Old): Old has become fragmented: ... density: %.1f%%")
+log_info(gc)("Trigger (Old): Expansion failure, current size: ...")
+```
 
 **Old immediate garbage (log_info)**:  
 `ShenandoahOldHeuristics::prepare_for_old_collections()`  
-[`shenandoahOldHeuristics.cpp:569`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahOldHeuristics.cpp#L569)  
+[`shenandoahOldHeuristics.cpp:569`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp#L569)  
 Log tag: `log_info(gc,ergo)`.
 
 **Annotated log_debug entries (NOT primary anchors)**:  
@@ -366,10 +388,10 @@ Log tag: `log_info(gc,ergo)`.
 **Call chain (primary)**:
 ```
 Shenandoah generational control thread main loop
-  → service_concurrent_normal_cycle()   [shenandoahGenerationalControlThread.cpp:374]
+  → service_concurrent_normal_cycle()   [shenandoahGenerationalControlThread.cpp:374](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L374)
   → fires at GC cycle start
 Trigger fields from: regulator thread → heuristic should_start_gc() calls
-                     → log_trigger() → [shenandoahHeuristics.cpp:248]
+                     → log_trigger() → [shenandoahHeuristics.cpp:248](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahHeuristics.cpp#L248)
 ```
 
 **Cadence**: Once per GC cycle start.
@@ -434,7 +456,7 @@ Shenandoah's generational heuristics make nuanced decisions — not just "heap i
 
 1. **Multi-site emission**: This event spans `service_concurrent_normal_cycle()` (control thread), `log_trigger()` (regulator thread), and `prepare_for_old_collections()` (old heuristics). Upstream will ask for a single emission point. The standard approach is to accumulate fields into a struct that is populated across the call chain and emitted at the control thread site. This is implementable but requires design work.
 2. **Trigger field separation**: The 6+ nullable adaptive trigger fields are a natural candidate for a separate `jdk.ShenandoahGCTrigger` event. Separating them makes each event simpler and avoids the sparse-field problem.
-3. **`decision` synthesis**: The `decision` string is not a single enum value from one place — it is synthesized from the GCMode enum at `shenandoahGenerationalControlThread.hpp`. The synthesis logic must be specified precisely in the patch.
+3. **`decision` synthesis**: The `decision` string is not a single enum value from one place — it is synthesized from the GCMode enum at [`shenandoahGenerationalControlThread.hpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.hpp). The synthesis logic must be specified precisely in the patch.
 
 ---
 
@@ -456,20 +478,44 @@ Shenandoah's generational heuristics make nuanced decisions — not just "heap i
 [`shenandoahMetrics.cpp:47,58,69,81`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp#L47)  
 Log tag: `log_info(gc,ergo)` — info level.
 
+**Exact log messages** (all four from [`shenandoahMetrics.cpp:38-90`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp#L38)):
+```
+log_info(gc, ergo)("%s progress for free space: %s, need %s", ...)       // line 47
+log_info(gc, ergo)("%s progress for used space: %s, need %s", ...)       // line 58
+log_info(gc, ergo)("%s progress for internal fragmentation: %.1f%%, need %.1f%%", ...)  // line 69
+log_info(gc, ergo)("%s progress for external fragmentation: %.1f%%, need %.1f%%", ...)  // line 81
+```
+Where `%s` = `"Good"` or `"Bad"`.
+
 **Call chain**:
 ```
 GC STW thread
-  → ShenandoahDegenGC::op_final_roots()   [shenandoahDegeneratedGC.cpp:330]
-    → is_good_progress()   [shenandoahMetrics.cpp:47]
-  → ShenandoahFullGC::op_gc()   [shenandoahFullGC.cpp:119]
-    → is_good_progress()   [shenandoahMetrics.cpp:47]
+  → ShenandoahDegenGC::op_final_roots()   [shenandoahDegeneratedGC.cpp:330](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahDegeneratedGC.cpp#L330)
+    → is_good_progress()   [shenandoahMetrics.cpp:47](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp#L47)
+  → ShenandoahFullGC::op_gc()   [shenandoahFullGC.cpp:119](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahFullGC.cpp#L119)
+    → is_good_progress()   [shenandoahMetrics.cpp:47](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp#L47)
 ```
 
 **Cadence**: Once per degenerated or full GC ONLY. Does NOT fire after normal concurrent cycles.
 
 **Thread**: GC STW thread.
 
-**Early-exit semantics**: The function checks dimensions in order: free space → used space → internal fragmentation → external fragmentation. It returns `true` (good progress) on the **first** dimension that passes. It returns `false` only if **all four** dimensions fail. This means if free space passes, the used/frag dimensions are never evaluated — so when `goodProgress=true`, only `freePercent` has been evaluated; the others were short-circuited. The `failedDimension` field captures the first dimension that failed (leading to false), or null if `goodProgress=true`.
+**Exact evaluation logic** (from [`shenandoahMetrics.cpp:38-90`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp#L38)):
+
+```
+1. free_space check:  if fails → return false immediately (hard gate)
+2. used_space check:  if passes → return true (short-circuit success)
+3. internal_frag check: if passes → return true
+4. external_frag check: if passes → return true
+5. if none of 2–4 passed → return false
+```
+
+Free space (`free_actual >= free_expected`) is a **hard prerequisite** — if it fails, no further dimensions are checked and the function immediately returns `false`. If free space passes, the function returns `true` on the first of used_space, internal_frag, or external_frag that passes. Only if all three subsequent dimensions also fail does the function return `false`.
+
+This means:
+- `goodProgress=false, failedDimension=free_space` → free was below critical threshold; used/frag not evaluated
+- `goodProgress=false, failedDimension=external_frag` → free passed, but used_space, internal_frag, AND external_frag all failed
+- `goodProgress=true` → free passed, and at least one of used_space/internal_frag/external_frag passed (the first to pass caused early return)
 
 **Exact source variables at `shenandoahMetrics.cpp:38-90`**:
 - `freeActual = _free_set->available()` — available bytes in mutator partition
@@ -523,7 +569,7 @@ A degenerated GC is Shenandoah's first-tier fallback: when a concurrent GC fails
 1. The 12-field version with cascading nullability will receive pushback. The simplified 5-field version is the right starting point.
 2. `badProgressCount` at value 2 means "Full GC will be triggered next" — this is the most actionable field. If only one field could be included, it would be this one.
 3. Should the event also fire after a successful `is_good_progress()` call (when `goodProgress=true`)? Yes — the event is equally useful for confirming that a degenerated GC was sufficient.
-4. Note the asymmetry in early-exit: `goodProgress=true` happens on the FIRST passing dimension (which may be just free space), while `goodProgress=false` means ALL four dimensions failed. The `failedDimension` field when `goodProgress=true` is always null — the function returned before evaluating remaining dimensions.
+4. Note the asymmetry in evaluation logic: free space is a hard gate (failure returns `false` immediately, no further checks). Used space, internal fragmentation, and external fragmentation are short-circuit successes (first to pass returns `true`). `goodProgress=false` means either free space failed, or free space passed but ALL THREE of used_space/internal_frag/external_frag also failed. The `failedDimension` field when `goodProgress=true` is always null — the function returned `true` before evaluating remaining dimensions after the first success.
 
 ---
 
@@ -537,20 +583,21 @@ A degenerated GC is Shenandoah's first-tier fallback: when a concurrent GC fails
 
 "What tenuring threshold did Shenandoah compute this cycle, and what are the min/max bounds in effect?"
 
-Shenandoah generational uses a mortality-rate-based algorithm to compute the tenuring threshold each young collection: it analyzes survival ratios across age cohorts, computes a weighted reciprocal, and clamps to `[ShenandoahGenerationalMinTenuringAge, ShenandoahGenerationalMaxTenuringAge]`. No existing JFR event exposes this per-cycle computed value.
+Shenandoah generational uses a mortality-rate-based algorithm ([JEP 521](https://openjdk.org/jeps/521), production-ready JDK 25) to compute the tenuring threshold each young collection: it analyzes survival ratios across age cohorts, computes a weighted reciprocal, and clamps to `[ShenandoahGenerationalMinTenuringAge, ShenandoahGenerationalMaxTenuringAge]`. No existing JFR event exposes this per-cycle computed value.
 
 #### Emission point
 
 **Function**: `ShenandoahAgeCensus::update_tenuring_threshold()`  
 [`shenandoahAgeCensus.cpp:258`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahAgeCensus.cpp#L258)  
+Log: `log_info(gc, age)("New tenuring threshold %zu (min %zu, max %zu)", new_threshold, min, max)`  
 Log tag: `log_info(gc,age)` — info level.
 
 **Call chain**:
 ```
 Shenandoah control thread (collection preparation phase)
-  → ShenandoahGeneration::prepare_regions_and_collection_set()   [shenandoahGeneration.cpp:286]
-    → ShenandoahAgeCensus::update_census()   [shenandoahAgeCensus.cpp:147]
-      → update_tenuring_threshold()   [shenandoahAgeCensus.cpp:167→258]
+  → ShenandoahGeneration::prepare_regions_and_collection_set()   [shenandoahGeneration.cpp:286](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGeneration.cpp#L286)
+    → ShenandoahAgeCensus::update_census()   [shenandoahAgeCensus.cpp:147](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahAgeCensus.cpp#L147)
+      → update_tenuring_threshold()   [shenandoahAgeCensus.cpp:167→258](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahAgeCensus.cpp#L258)
 ```
 
 Timing: after concurrent marking, before CSet finalization.
@@ -608,13 +655,14 @@ Shenandoah computes this dynamically from mortality rates, so the threshold adap
 
 **Function**: `ZGenerationYoung::select_tenuring_threshold()`  
 [`zGeneration.cpp:716`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zGeneration.cpp#L716)  
+Log: `log_info(gc, reloc)("Using tenuring threshold: %d (%s)", _tenuring_threshold, reason)`  
 Log tag: `log_info(gc,reloc)` — info level.
 
 **Call chain**:
 ```
 ZGC concurrent thread (relocation set selection)
-  → ZGeneration::select_relocation_set()   [zGeneration.cpp:205]
-    → (line 250) → select_tenuring_threshold()   [zGeneration.cpp:716]
+  → ZGeneration::select_relocation_set()   [zGeneration.cpp:205](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zGeneration.cpp#L205)
+    → (line 250) → select_tenuring_threshold()   [zGeneration.cpp:716](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zGeneration.cpp#L716)
 ```
 
 Timing: after `selector.select()` produces liveness data, before `_relocation_set.install()`.
@@ -677,13 +725,14 @@ Stale (`_nunregistered`) slots in the ZGC nmethod table indicate zombie entries 
 
 **Function**: `ZStatNMethods::print()`  
 [`zStat.cpp:1621`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zStat.cpp#L1621)  
+Log: `log_info(gc, nmethod)("NMethods: %zu registered, %zu unregistered", ZNMethodTable::registered_nmethods(), ZNMethodTable::unregistered_nmethods())`  
 Log tag: `log_info(gc,nmethod)` — info level.
 
 **Call chain**:
 ```
 ZGC concurrent thread (inside ZStatPhaseGeneration::register_end)
-  → ZStatPhaseGeneration::register_end()   [zStat.cpp:711]
-    → ZStatNMethods::print()   [zStat.cpp:730]
+  → ZStatPhaseGeneration::register_end()   [zStat.cpp:711](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zStat.cpp#L711)
+    → ZStatNMethods::print()   [zStat.cpp:730](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zStat.cpp#L730)
 ```
 
 Fires at end of every ZGC generation collection (both young and old).
@@ -732,13 +781,13 @@ A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the t
 
 #### Verdict
 
-**Propose with caveats.** The code is in the product build (not `#ifndef PRODUCT` guarded); the data is available. The `log_debug` source is a valid concern for upstream reviewers, but the argument is straightforward: refinement sweep metrics are essential for understanding JEP 522 (JDK 25 write barrier redesign) behavior in production, and they have never been accessible without enabling debug logging. JFR changes the access model, not the data.
+**Propose with caveats.** The code is in the product build (not `#ifndef PRODUCT` guarded); the data is available. The `log_debug` source is a valid concern for upstream reviewers, but the argument is straightforward: refinement sweep metrics are essential for understanding [JEP 522](https://openjdk.org/jeps/522) (JDK 25 write barrier redesign) behavior in production, and they have never been accessible without enabling debug logging. JFR changes the access model, not the data.
 
 #### The question it answers
 
 "How fast is G1's concurrent card refinement running, and what is the pending-card backlog?"
 
-G1's concurrent refinement thread processes dirty card queue entries between GC pauses. The throughput and backlog of this process directly affect pause time predictability. Under the JDK 25 write barrier redesign (JEP 522), refinement behavior changed significantly. Without JFR coverage, operators must enable `-Xlog:gc+refine=debug` to observe refinement dynamics — an option rarely available in production.
+G1's concurrent refinement thread processes dirty card queue entries between GC pauses. The throughput and backlog of this process directly affect pause time predictability. Under the JDK 25 write barrier redesign ([JEP 522](https://openjdk.org/jeps/522)), refinement behavior changed significantly. Without JFR coverage, operators must enable `-Xlog:gc+refine=debug` to observe refinement dynamics — an option rarely available in production.
 
 #### Emission points
 
@@ -750,14 +799,21 @@ G1's concurrent refinement thread processes dirty card queue entries between GC 
 `G1ConcurrentRefineSweepState::handle_ongoing_refinement_at_safepoint()`  
 [`g1ConcurrentRefine.cpp:340`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L340)
 
+Both call `print_refinement_stats()` at [`g1ConcurrentRefine.cpp:301`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L301). **Exact log message**:
+```
+log_debug(gc, refine)("Refinement took %.2fms (pre-sweep %.2fms card refine %.2fms) "
+    "(scanned %zu clean %zu (%.2f%%) not_clean %zu (%.2f%%) not_parsable %zu "
+    "refers_to_cset %zu (%.2f%%) still_refers_to_cset %zu (%.2f%%) no_cross_region %zu pending %zu)",
+    ...);
+```
 Log tag: `log_debug(gc,refine)` at both sites.
 
 **Call chain**:
 ```
 G1ConcurrentRefineThread control loop
   → sweep state machine
-  → complete_refinement()   [g1ConcurrentRefine.cpp:377]   (normal)
-  → handle_ongoing_refinement_at_safepoint()   [g1ConcurrentRefine.cpp:340]   (interrupted)
+  → complete_refinement()   [g1ConcurrentRefine.cpp:377](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L377)   (normal)
+  → handle_ongoing_refinement_at_safepoint()   [g1ConcurrentRefine.cpp:340](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L340)   (interrupted)
 ```
 
 **Cadence**: Once per refinement sweep. Can fire multiple times between GC pauses (each sweep is one pass through the dirty-card queue).
@@ -785,7 +841,7 @@ G1ConcurrentRefineThread control loop
 
 #### What it is used for
 
-G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pauses. If refinement cannot keep up, the backlog grows and must be processed during the next GC pause — extending pause time. After the JEP 522 write barrier redesign (JDK 25), the card-dirtying model changed; this event provides the first structured way to monitor refinement throughput in production without enabling debug logging.
+G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pauses. If refinement cannot keep up, the backlog grows and must be processed during the next GC pause — extending pause time. After the [JEP 522](https://openjdk.org/jeps/522) write barrier redesign (JDK 25), the card-dirtying model changed; this event provides the first structured way to monitor refinement throughput in production without enabling debug logging.
 
 **Key diagnosis**:
 - `cardsPending` growing over time → refinement thread count is insufficient; increase `G1ConcurrentRefinementThreads` or check GC CPU overhead.
@@ -803,7 +859,7 @@ G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pau
 
 1. **Debug-level source**: the primary question upstream will ask. The counter-argument: the `print_refinement_stats()` function is in the product build, the data IS available, and JFR is a production observability tool. The log-level is about `-Xlog` verbosity, not data availability.
 2. Should `cardsNotParsable` and `cardsRefersToCset` be dropped to simplify the field set?
-3. JEP 522 context: does upstream want a note in the JEP or JFR RFE linking this event to the JEP 522 observability gap?
+3. [JEP 522](https://openjdk.org/jeps/522) context: does upstream want a note in the JEP or JFR RFE linking this event to the JEP 522 observability gap?
 
 ---
 
@@ -824,26 +880,43 @@ G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pau
 **Per-GC-pause (log_debug)**:  
 `G1Policy::record_young_collection_end()`  
 [`g1Policy.cpp:803`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1Policy.cpp#L803)  
-Log tag: `log_debug(gc,ergo,refine)`.
+**Exact log message** (at [`g1Policy.cpp:1022`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1Policy.cpp#L1022)):
+```
+log_debug(gc, ergo, refine)("GC refinement: goal: %zu / %1.2fms, actual: %zu / %1.2fms, %s",
+    cr->pending_cards_target(),
+    pending_cards_time_goal_ms,
+    pending_cards,
+    pending_cards_time_ms,
+    (exceeded_goal ? " (exceeded goal)" : ""));
+```
+Log tag: `log_debug(gc,ergo,refine)`. Fields available: `pendingCardsTarget`, `goalMs`, `pendingCards`, `pendingCardsTimeMs`, `exceededGoal`. Note: `threadsWanted` is **not** available at this site — only the periodic path has thread-count information.
 
 **Periodic (log_debug)**:  
 `G1ConcurrentRefine::adjust_threads_wanted()`  
 [`g1ConcurrentRefine.cpp:598`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L598)  
 Called from `adjust_num_threads_periodically()`.  
+**Exact log message** (from [`g1ConcurrentRefine.cpp:618`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L618)):
+```
+log_debug(gc, refine)("Concurrent refinement: wanted %u, pending cards: %zu (pending-from-gc %zu), "
+    "predicted: %zu, goal %zu, time-until-next-gc: %1.2fms pred-refine-rate %1.2fc/ms log-rate %1.2fc/ms",
+    new_wanted, num_cards, pending_cards_from_gc,
+    predicted_cards, _pending_cards_target, time_until_gc_ms,
+    predict_concurrent_refine_rate_ms, predict_dirtied_cards_rate_ms);
+```
 Log tag: `log_debug(gc,refine)`.
 
 **Call chain (GC-pause path)**:
 ```
 GC pause thread
   → G1YoungCollector::post_evacuate_collection_set()
-    → G1Policy::record_young_collection_end()   [g1Policy.cpp:803]
+    → G1Policy::record_young_collection_end()   [g1Policy.cpp:803](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1Policy.cpp#L803)
 ```
 
 **Call chain (periodic path)**:
 ```
 G1 concurrent refinement control thread
   → G1ConcurrentRefine::adjust_num_threads_periodically()
-    → adjust_threads_wanted()   [g1ConcurrentRefine.cpp:598]
+    → adjust_threads_wanted()   [g1ConcurrentRefine.cpp:598](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L598)
 ```
 
 **Cadence**: Once per young GC pause (pause path) plus periodically between pauses (periodic path).
@@ -855,16 +928,17 @@ G1 concurrent refinement control thread
 | Field | Source | Nullable? | Tuning use |
 |---|---|---|---|
 | `startTime` | Standard JFR | No | Correlate with GC pause or periodic adjustment |
-| `threadsWanted` | `new_wanted` from `adjust_threads_wanted()` — [`g1ConcurrentRefine.cpp:610`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L610) | No | **Primary output**: how many refinement threads the policy wants. If repeatedly at max → refinement is undersized |
-| `pendingCards` | `policy->current_pending_cards()` — actual pending card count | No | Current backlog; if growing between policy ticks, refinement is falling behind |
-| `pendingCardsFromGC` | `pending_cards_from_gc()` — cards dirtied by GC itself (internal remembered-set updates) | No | Distinguishes GC-generated card traffic from mutator write traffic; high `pendingCardsFromGC` relative to `pendingCards` = GC is contributing significantly to its own backlog |
+| `threadsWanted` | `new_wanted` from `adjust_threads_wanted()` — [`g1ConcurrentRefine.cpp:610`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L610); **not available on GC-pause path** — null when emitted from `record_young_collection_end()` | Yes (null on GC-pause path) | **Primary output**: how many refinement threads the policy wants. If repeatedly at max → refinement is undersized |
+| `pendingCards` | GC-pause: `pending_cards` from `record_young_collection_end()`; periodic: `policy->current_pending_cards()` from `adjust_threads_wanted()` | No | Current backlog; if growing between policy ticks, refinement is falling behind |
+| `pendingCardsFromGC` | `pending_cards_from_gc()` — cards dirtied by GC itself (internal remembered-set updates); periodic path only | Yes (null on GC-pause path) | Distinguishes GC-generated card traffic from mutator write traffic; high `pendingCardsFromGC` relative to `pendingCards` = GC is contributing significantly to its own backlog |
 | `pendingCardsTarget` | `_pending_cards_target` — policy's goal for pending card count | No | **Key tuning lever**: if `pendingCards` consistently exceeds `pendingCardsTarget`, the target may need to increase or thread count is constrained |
-| `predictedPendingCards` | `_threads_needed.predicted_cards_at_next_gc()` — predicted pending at next GC | Consider dropping | Model estimate; useful for detecting if the policy predicts it will fall behind before next pause |
-| `predictedRefineRate` | `analytics->predict_concurrent_refine_rate_ms()` — predicted cards/ms refinement throughput | No | The capacity side of the balance: throughput × time-until-gc ≈ expected cards refined |
-| `dirtiedCardRate` | `analytics->predict_dirtied_cards_rate_ms()` — predicted cards/ms write rate from mutators | No | **Demand side**: if `dirtiedCardRate > predictedRefineRate × threadsWanted`, the policy will fall behind |
-| `goalMs` | Policy's refinement time window goal | No | Refinement is expected to clear backlog within this window |
-| `timeUntilNextGC` | `_threads_needed.predicted_time_until_next_gc_ms()` | No | Time available for refinement before next GC pause; `timeUntilNextGC × predictedRefineRate × threadsWanted` ≈ expected clearance |
-| `exceededGoal` | Boolean: sweep exceeded goal window | No | `true` repeatedly → refinement cannot complete in time, increasing pause-time risk |
+| `predictedPendingCards` | `_threads_needed.predicted_cards_at_next_gc()` — predicted pending at next GC; periodic path only | Consider dropping | Model estimate; useful for detecting if the policy predicts it will fall behind before next pause |
+| `predictedRefineRate` | `analytics->predict_concurrent_refine_rate_ms()` — predicted cards/ms refinement throughput; periodic path only | Yes (null on GC-pause path) | The capacity side of the balance: throughput × time-until-gc ≈ expected cards refined |
+| `dirtiedCardRate` | `analytics->predict_dirtied_cards_rate_ms()` — predicted cards/ms write rate from mutators; periodic path only | Yes (null on GC-pause path) | **Demand side**: if `dirtiedCardRate > predictedRefineRate × threadsWanted`, the policy will fall behind |
+| `goalMs` | GC-pause: `pending_cards_time_goal_ms` (`_mmu_tracker->max_gc_time() × G1RSetUpdatingPauseTimePercent/100`); periodic: policy's refinement time window goal | No | Refinement is expected to clear backlog within this window |
+| `pendingCardsTimeMs` | GC-pause: actual time to process pending cards in the last GC pause; periodic path: not available | Yes (null on periodic path) | Compares against `goalMs` — the GC-pause dimension of whether card processing met its goal |
+| `timeUntilNextGC` | `_threads_needed.predicted_time_until_next_gc_ms()`; periodic path only | Yes (null on GC-pause path) | Time available for refinement before next GC pause; `timeUntilNextGC × predictedRefineRate × threadsWanted` ≈ expected clearance |
+| `exceededGoal` | Boolean: sweep exceeded goal window; derivable as `pendingCards > pendingCardsTarget` or `pendingCardsTimeMs > goalMs` | No | `true` repeatedly → refinement cannot complete in time, increasing pause-time risk |
 
 #### What it is used for
 
@@ -883,7 +957,7 @@ Complements `jdk.G1ConcurrentRefinementSweep`: where Sweep shows per-sweep throu
 
 1. Same debug-level question as `jdk.G1ConcurrentRefinementSweep`.
 2. Should `predictedPendingCards` be dropped? It is a model estimate that may confuse rather than inform.
-3. Two emission points from two threads: upstream may prefer a single emission point. The GC-pause path is the cleaner one; the periodic path adds thread-count adjustment visibility between pauses.
+3. **Two emission points with different field shapes**: the GC-pause path (`record_young_collection_end()`) does not provide `threadsWanted`, `pendingCardsFromGC`, `predictedRefineRate`, or `dirtiedCardRate` — those are only available from the periodic `adjust_threads_wanted()` path. The simplest approach: emit the event only from the periodic path (where all fields are available), and accept that the GC-pause-aligned data is not captured. Alternatively, emit from the GC-pause path for `exceededGoal` and `pendingCardsTimeMs`, and from the periodic path for the rest, marking GC-path-only fields nullable when emitted periodically.
 
 ---
 
@@ -905,19 +979,39 @@ Mixed GC behavior is currently observable only via `-Xlog:gc+ergo+cset=debug`. T
 `G1CollectionSet::select_candidates_from_marking()`  
 [`g1CollectionSet.cpp:414`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L414)
 
+**Start log** ([`g1CollectionSet.cpp:435`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L435)):
+```
+log_debug(gc, ergo, cset)("Start adding marking candidates to collection set. "
+    "Min %u regions, max %u regions, available %u regions (%u groups), ...");
+```
+
+**Finish log** ([`g1CollectionSet.cpp:521`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L521)):
+```
+log_debug(gc, ergo, cset)("Finish adding marking candidates to collection set. "
+    "Initial: %u regions (%u groups), optional: %u regions (%u groups), "
+    "predicted initial time: %1.2fms, predicted optional time: %1.2fms, time remaining: %1.2fms");
+```
+
 **Retained candidates**:  
 `G1CollectionSet::select_candidates_from_retained()`  
 [`g1CollectionSet.cpp:531`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L531)
 
-Log tag: `log_debug(gc,ergo,cset)` at both sites.
+**Start log** ([`g1CollectionSet.cpp:552`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L552)):
+```
+log_debug(gc, ergo, cset)("Start adding retained candidates to collection set. "
+    "Min %u regions, available %u regions (%u groups), "
+    "time remaining %1.2fms, optional remaining %1.2fms");
+```
+
+Log tag: `log_debug(gc,ergo,cset)` at all sites.
 
 **Call chain**:
 ```
 GC pause thread (during CSet finalization, before evacuation)
-  → G1CollectionSet::finalize_initial_collection_set()   [g1CollectionSet.cpp:715]
-    → G1CollectionSet::finalize_old_part()   [g1CollectionSet.cpp:377]
-      → select_candidates_from_marking()   [g1CollectionSet.cpp:414]
-      → select_candidates_from_retained()   [g1CollectionSet.cpp:531]
+  → G1CollectionSet::finalize_initial_collection_set()   [g1CollectionSet.cpp:715](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L715)
+    → G1CollectionSet::finalize_old_part()   [g1CollectionSet.cpp:377](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L377)
+      → select_candidates_from_marking()   [g1CollectionSet.cpp:414](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L414)
+      → select_candidates_from_retained()   [g1CollectionSet.cpp:531](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L531)
 ```
 
 **Cadence**: Twice per mixed GC pause (once for Marking, once for Retained). Zero times during non-mixed pauses.
@@ -986,14 +1080,26 @@ The size delta is computable from `jdk.G1HeapSummary` events before and after a 
 **Function**: `G1HeapSizingPolicy::young_collection_resize_amount()`  
 [`g1HeapSizingPolicy.cpp:216`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L216)  
 Three `log_resize()` calls at lines 302, 319, 337.  
-Also: `young_collection_shrink_amount()` at line 172.  
+Also: `young_collection_shrink_amount()` at [`g1HeapSizingPolicy.cpp:172`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L172).
+
+**Exact log message** via `log_resize()` ([`g1HeapSizingPolicy.cpp:82`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L82)):
+```
+log_debug(gc, ergo, heap)("Heap resize: "
+    "short term GC CPU usage %1.2f%% long term GC CPU usage %1.2f%% "
+    "lower threshold %1.2f%% upper threshold %1.2f%% GC CPU usage target %1.2f%% "
+    "at limit %s resize by %zuB expand %s",
+    short_term_cpu_usage * 100.0, long_term_cpu_usage * 100.0,
+    lower_threshold * 100.0, upper_threshold * 100.0,
+    cpu_usage_target * 100.0, BOOL_TO_STR(at_limit),
+    resize_bytes, BOOL_TO_STR(expand));
+```
 Log tag: `log_debug(gc,ergo,heap)` — `log_resize()` is debug level.
 
 **Call chain**:
 ```
 GC pause thread
-  → G1CollectedHeap::resize_heap_after_young_collection()   [g1CollectedHeap.cpp:986]
-    → young_collection_resize_amount()   [g1HeapSizingPolicy.cpp:216]
+  → G1CollectedHeap::resize_heap_after_young_collection()   [g1CollectedHeap.cpp:986](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L986)
+    → young_collection_resize_amount()   [g1HeapSizingPolicy.cpp:216](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L216)
 ```
 
 Fires at end of every young GC pause.
@@ -1059,26 +1165,26 @@ G1 adjusts the committed heap between pauses based on GC CPU usage vs. a target 
 #### Emission points
 
 All rule functions in [`zDirector.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp):
-- `rule_minor_timer`
-- `rule_minor_allocation_rate_dynamic`
-- `rule_minor_allocation_rate_static`
-- `rule_minor_high_usage`
-- `rule_major_timer`
-- `rule_major_warmup`
-- `rule_major_proactive`
-- `rule_major_allocation_rate`
+- [`rule_minor_timer`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L84): `log_debug(gc, director)("Rule Minor: Timer, Interval: %.3fs, TimeUntilGC: %.3fs", ...)`
+- [`rule_minor_allocation_rate_dynamic`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L147): `log_debug(gc, director)("Rule Minor: Allocation Rate (Dynamic GC Workers), MaxAllocRate: %.1fMB/s (+/-%.1f%%), Free: %zuMB, ..., TimeUntilOOM: %.3fs, TimeUntilGC: %.3fs, ...", ...)`
+- [`rule_minor_allocation_rate_static`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L248): `log_debug(gc, director)("Rule Minor: Allocation Rate (Static GC Workers), MaxAllocRate: %.1fMB/s, Free: %zuMB, GCDuration: %.3fs, TimeUntilGC: %.3fs", ...)`
+- [`rule_minor_high_usage`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L365): `log_debug(gc, director)("Rule Minor: High Usage, Free: %zuMB(%.1f%%)", ...)`
+- [`rule_major_timer`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L385): `log_debug(gc, director)("Rule Major: Timer, Interval: %.3fs, TimeUntilGC: %.3fs", ...)`
+- [`rule_major_warmup`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L401): `log_debug(gc, director)("Rule Major: Warmup %.0f%%, Used: %zuMB, UsedThreshold: %zuMB", ...)`
+- [`rule_major_proactive`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L550): `log_debug(gc, director)("Rule Major: Proactive, AcceptableGCInterval: %.3fs, TimeSinceLastGC: %.3fs, TimeUntilGC: %.3fs", ...)`
+- [`rule_major_allocation_rate`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L470): `log_debug(gc, director)("Rule Major: Allocation Rate, ExtraYoungGCTime: %.3fs, OldGCTime: %.3fs, Lookahead: %u, ...", ...)`
 
 **Call chain**:
 ```
 ZGC director thread
-  → director tick loop → start_gc()   [zDirector.cpp:926]
-    → make_major_gc_decision()   [zDirector.cpp:631]
+  → director tick loop → start_gc()   [zDirector.cpp:820](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L820)
+    → make_major_gc_decision()   [zDirector.cpp:631](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L631)
       → individual major rule functions
-    → make_minor_gc_decision()   [zDirector.cpp:607]
+    → make_minor_gc_decision()   [zDirector.cpp:607](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L607)
       → individual minor rule functions
 ```
 
-**Early-exit**: `make_minor/major_gc_decision` return on first triggered rule — at most ONE minor and ONE major rule fires per tick.
+**Early-exit**: `start_gc()` ([`zDirector.cpp:820`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L820)) evaluates major first, then minor only if major did not trigger. If a major rule fires, minor rules are never evaluated. Within each direction, `make_minor/major_gc_decision` returns on the first triggered rule. So per tick: at most ONE rule fires total (either one major, or one minor — never both).
 
 Log tag: `log_debug(gc,director)` — ALL rule log sites in `zDirector.cpp`. There is no `log_info` in the entire file.
 
@@ -1097,8 +1203,8 @@ Emit one event per director tick with ~6 fields. The `start_gc()` function at [`
 | Field | Source | Nullable? | Tuning use |
 |---|---|---|---|
 | `startTime` | Standard JFR | No | Tick frequency check |
-| `triggeredMinorRule` | `GCCause::Cause` name from `make_minor_gc_decision()` return — null if `_no_gc` | Yes | Which pressure caused the minor GC: `"_z_timer"` (periodic), `"_z_allocation_rate"` (memory pressure), `"_z_high_usage"` (heap nearly full) |
-| `triggeredMajorRule` | `GCCause::Cause` name from `make_major_gc_decision()` return — null if `_no_gc` | Yes | `"_z_warmup"` (early startup), `"_z_proactive"` (idle cleanup), `"_z_allocation_rate"` (escalated from minor), `"_z_timer"` |
+| `triggeredMinorRule` | `GCCause::Cause` name from `make_minor_gc_decision()` return — null if `_no_gc` or if major triggered (major preempts minor evaluation entirely) | Yes | Which pressure caused the minor GC: `"_z_timer"` (periodic), `"_z_allocation_rate"` (memory pressure), `"_z_high_usage"` (heap nearly full) |
+| `triggeredMajorRule` | `GCCause::Cause` name from `make_major_gc_decision()` return — null if `_no_gc`; evaluated first; if non-null, minor was never evaluated | Yes | `"_z_warmup"` (early startup), `"_z_proactive"` (idle cleanup), `"_z_allocation_rate"` (escalated from minor pressure), `"_z_timer"` |
 | `timeUntilMinorOOM` | From alloc-rate rule (`rule_minor_allocation_rate_dynamic`): `time_until_oom` computed from allocation rate model | Yes | Seconds until OOM at current allocation rate; null if alloc-rate rule was not evaluated. Low value = imminent allocation failure |
 | `minorFreeBytes` | Available young-gen bytes from alloc-rate/high-usage rules | Yes | Remaining headroom; compare against `ZAllocationSpikeTolerance` |
 | `majorFreePercent` | Old-gen free fraction from high-usage/warmup rules | Yes | Overall heap headroom for old gen |
@@ -1109,7 +1215,7 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 
 **Key diagnostic patterns**:
 - `triggeredMinorRule="_z_allocation_rate"` with decreasing `timeUntilMinorOOM` → increasing allocation pressure; if `timeUntilMinorOOM < typical_gc_duration`, allocation stalls are imminent.
-- `triggeredMajorRule="_z_allocation_rate"` → minor GC was not sufficient to relieve pressure; ZGC is escalating to a major collection. This should be rare — frequent occurrence means the young gen is too small.
+- `triggeredMajorRule="_z_allocation_rate"` → allocation rate exceeded the young-gen capacity threshold; ZGC triggered a major collection directly (minor was not evaluated). This should be rare — frequent occurrence means the young gen is too small relative to allocation rate.
 - All ticks showing both rules null (no GC triggered) → ZGC is idle; heap usage is low relative to capacity. Expected during low-load periods.
 - `triggeredMajorRule="_z_warmup"` in steady state → warmup period was miscalibrated or the JVM restarted; this rule should only fire during initial heap fill.
 
@@ -1128,7 +1234,8 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 
 1. **All-debug source**: `zDirector.cpp` has zero `log_info` sites. This is the hardest case to justify to upstream. The argument must be: "the director tick data is production-relevant, the current absence of any JFR signal for no-trigger ticks is an observability gap, and JFR's access model is independent of the log level."
 2. Should the event fire on ticks where no GC is triggered (both `triggeredMinorRule` and `triggeredMajorRule` null)? If yes, the event fires every second even during idle periods. Consider filtering to ticks where at least one rule fired.
-3. The per-tick summary design must be validated: does the information from individual rule functions flow up to a single place in `start_gc()` where all fields are available? If not, the summary event still requires a struct accumulation pattern.
+3. The per-tick summary design must be validated: does the information from individual rule functions flow up to a single place in `start_gc()` where all fields are available? The `start_gc()` function receives a `ZDirectorStats stats` argument — the individual rule functions also receive it. `timeUntilMinorOOM` and `minorFreeBytes` are local variables within `rule_minor_allocation_rate_dynamic()` and `rule_minor_high_usage()` respectively. They do NOT bubble up to `start_gc()`. A struct accumulation pattern is required: each rule would populate a `ZDirectorRuleResult` struct, which `make_minor_gc_decision()` / `make_major_gc_decision()` would return alongside the `GCCause::Cause` value. This is a non-trivial design change but is the correct approach.
+4. Correction to "both rules null" filtering (question 2): note that `triggeredMajorRule` non-null means minor was **never evaluated** — so a "major triggered" event genuinely has both `triggeredMinorRule=null` (not evaluated) and `triggeredMajorRule=<cause>`. A consumer must not interpret `triggeredMinorRule=null` as "minor evaluated, nothing triggered" — only as "either minor evaluated and did not trigger, or minor was not evaluated because major triggered first." This distinction should be documented in the event schema description.
 
 ---
 
@@ -1150,9 +1257,25 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 `PSAdaptiveSizePolicy::print_stats()`  
 [`psAdaptiveSizePolicy.cpp:63`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp#L63)
 
+**Exact log message**:
+```
+log_debug(gc, ergo)("Adaptive: throughput: %.3f, pause: %.1f ms, "
+    "gc-distance: %.3f (%.3f) s, "
+    "promoted: %.1f %s (%.1f %s), promotion-rate: %.1f M/s (%.1f M/s), overflowing: %s",
+    mutator_time_percent(), minor_gc_time_estimate() * 1000.0,
+    _gc_distance_seconds_seq.davg(), _gc_distance_seconds_seq.last(),
+    ..., is_survivor_overflowing ? "true" : "false");
+```
+
 **Old gen shrink fields**:  
 `PSAdaptiveSizePolicy::compute_old_gen_shrink_bytes()`  
-[`psAdaptiveSizePolicy.cpp:~182`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp#L182)
+[`psAdaptiveSizePolicy.cpp:165`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp#L165)
+
+**Exact log message** ([`psAdaptiveSizePolicy.cpp:182`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp#L182)):
+```
+log_debug(gc, ergo)("Adaptive: old-gen free bytes: %.0f M, min-free-bytes: %.1f M, shrink-bytes: %zu K",
+    old_gen_free_bytes / M, min_free_bytes / M, shrink_bytes / K);
+```
 
 **Eden/survivor desired sizes**:  
 `PSYoungGen::compute_desired_sizes()`  
@@ -1163,8 +1286,8 @@ Log tag: `log_debug(gc,ergo)` — ALL sites are debug level.
 **Call chain**:
 ```
 GC pause thread (within PSScavenge::invoke)
-  → PSScavenge::invoke()   [psScavenge.cpp:431]
-    → size_policy->print_stats(_survivor_overflow)   [psScavenge.cpp:431]
+  → PSScavenge::invoke()   [psScavenge.cpp:305](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psScavenge.cpp#L305)
+    → size_policy->print_stats(_survivor_overflow)   [psScavenge.cpp:431](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psScavenge.cpp#L431)
     → (also within same invoke()) compute_old_gen_shrink_bytes()
     → (also within same invoke()) PSYoungGen::compute_desired_sizes()
 ```
