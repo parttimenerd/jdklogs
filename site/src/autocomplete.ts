@@ -3,7 +3,7 @@
 
 import { LEVELS, TagInfo } from "./types";
 
-export interface Suggestion { text: string; kind: "tag" | "level" | "all"; detail?: string; dead?: boolean; }
+export interface Suggestion { text: string; kind: "tag" | "level" | "all"; detail?: string; dead?: boolean; coTagged?: boolean; }
 
 /**
  * Suggest completions for the token under the cursor in a config string.
@@ -13,8 +13,18 @@ export interface Suggestion { text: string; kind: "tag" | "level" | "all"; detai
  *
  * When `available` is provided, tags with no log sites for the current gc/platform are kept but
  * marked dead (muted, with a "no sites for this GC" note) and sorted after the live ones.
+ *
+ * When `coTags` is provided and the cursor follows a `+`, tags that actually co-occur with the
+ * already-typed tags in real log sites are sorted to the top (co-tag biasing), so building
+ * multi-tag selectors like `gc+heap` surfaces the right completions first.
  */
-export function suggest(input: string, caret: number, tags: TagInfo[], available?: Set<string>): Suggestion[] {
+export function suggest(
+  input: string,
+  caret: number,
+  tags: TagInfo[],
+  available?: Set<string>,
+  coTags?: Map<string, Set<string>>
+): Suggestion[] {
   const before = input.slice(0, caret);
   // find the current token boundaries
   const tokenStart = Math.max(
@@ -30,20 +40,52 @@ export function suggest(input: string, caret: number, tags: TagInfo[], available
     return LEVELS.filter((l) => l.startsWith(token)).map((l) => ({ text: l, kind: "level" }));
   }
 
+  // When after a `+`, compute the set of tags that co-occur with all already-typed tags in this
+  // selector. These get promoted to the top of the list so multi-tag selectors are easy to build.
+  let coTagBias: Set<string> | null = null;
+  if (sep === "+" && coTags) {
+    // The current selector starts after the last `,` before the caret.
+    const selectorStart = before.lastIndexOf(",") + 1;
+    const selectorSoFar = before.slice(selectorStart, tokenStart - 1); // everything before the last `+`
+    const alreadyTyped = selectorSoFar.split("+").map((t) => t.trim()).filter(Boolean);
+    if (alreadyTyped.length > 0) {
+      // Intersect the co-tag sets of all already-typed tags.
+      let intersection: Set<string> | null = null;
+      for (const t of alreadyTyped) {
+        const ct = coTags.get(t);
+        if (!ct) { intersection = new Set<string>(); break; }
+        if (intersection === null) {
+          intersection = new Set<string>(ct);
+        } else {
+          for (const x of [...intersection]) { if (!ct.has(x)) intersection.delete(x); }
+        }
+      }
+      // Exclude tags already in the selector and the token being typed.
+      const alreadySet = new Set(alreadyTyped);
+      coTagBias = new Set([...(intersection ?? [])].filter((t) => !alreadySet.has(t)));
+    }
+  }
+
   const out: Suggestion[] = [];
   if ("all".startsWith(token) && token.length > 0) out.push({ text: "all", kind: "all", detail: "every tag set" });
   for (const t of tags) {
     if (!t.name.startsWith(token)) continue;
     const dead = available !== undefined && !available.has(t.name);
+    const coTagged = coTagBias !== null && coTagBias.has(t.name);
     out.push({
       text: t.name,
       kind: "tag",
       detail: dead ? `${t.description} · no sites for this GC` : t.description,
       dead,
+      coTagged,
     });
   }
-  // Bias live tags to the top (stable) so dead ones don't crowd out useful completions in the cap.
-  out.sort((a, b) => Number(a.dead ?? false) - Number(b.dead ?? false));
+  // Sort order: co-tagged live > other live > dead. Within each tier, preserve stable (insertion) order.
+  out.sort((a, b) => {
+    const aScore = (a.dead ? 2 : a.coTagged ? 0 : 1);
+    const bScore = (b.dead ? 2 : b.coTagged ? 0 : 1);
+    return aScore - bScore;
+  });
   return out.slice(0, 12);
 }
 

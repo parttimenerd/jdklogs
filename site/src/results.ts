@@ -98,6 +98,20 @@ export function renderFiringSites(
     byFile.set(s.file, arr);
   }
 
+  // Map each site id to its line offset within its block. Sites within a block are stored in
+  // data.sites in startLine order (matching the order of block.firingLineOffsets), so the i-th
+  // site for a given blockId maps to firingLineOffsets[i].
+  const siteOffsetMap = new Map<string, number>(); // siteId → line offset within block
+  const blockSiteCount = new Map<string, number>();
+  for (const s of data.sites) {
+    const idx = blockSiteCount.get(s.blockId) ?? 0;
+    const block = data.blocks[s.blockId];
+    if (block && idx < block.firingLineOffsets.length) {
+      siteOffsetMap.set(s.id, block.firingLineOffsets[idx]);
+    }
+    blockSiteCount.set(s.blockId, idx + 1);
+  }
+
   // Flatten to (file, representative-site, block-sites) render units, deduped by blockId, so we can
   // cap on blocks rather than files (a single file may hold dozens of distinct context blocks).
   interface Unit { file: string; rep: SiteJson; blockSites: SiteJson[]; }
@@ -191,7 +205,7 @@ export function renderFiringSites(
           fileEl.appendChild(h);
           root.appendChild(fileEl);
         }
-        fileEl!.appendChild(renderBlock(data, u.rep.blockId, data.blocks[u.rep.blockId], u.rep, u.blockSites, gc, blockLinkFor, presence, versions));
+        fileEl!.appendChild(renderBlock(data, u.rep.blockId, data.blocks[u.rep.blockId], u.rep, u.blockSites, gc, blockLinkFor, presence, versions, siteOffsetMap));
       }
     };
 
@@ -267,7 +281,8 @@ function renderBlock(
   gc: string,
   blockLinkFor?: (blockId: string) => string,
   presence?: Presence | null,
-  versions?: string[]
+  versions?: string[],
+  siteOffsetMap?: Map<string, number>
 ): HTMLElement {
   const blockEl = document.createElement("div");
   blockEl.className = "block";
@@ -336,7 +351,7 @@ function renderBlock(
   }
   blockEl.appendChild(meta);
 
-  blockEl.appendChild(renderSnippet(block, blockSites, gc));
+  blockEl.appendChild(renderSnippet(block, blockSites, gc, siteOffsetMap));
 
   // Under each snippet: a collapsible with example emitted log lines and an approximate lines/hour
   // rate, extrapolated from the Renaissance benchmark run for this GC. Absent when nothing was
@@ -392,20 +407,32 @@ function renderExamples(blockSites: SiteJson[], vol: VolumeStats, gc: string): H
 }
 
 /** Render a highlighted snippet with firing lines marked and per-line hover samples. */
-export function renderSnippet(block: Block, blockSites: SiteJson[], gc: string): HTMLElement {
+export function renderSnippet(block: Block, blockSites: SiteJson[], gc: string, siteOffsetMap?: Map<string, number>): HTMLElement {
   const pre = document.createElement("pre");
   pre.className = "snippet language-cpp";
   const lines = block.snippet.split("\n");
-  const firing = new Set(block.firingLineOffsets);
+
+  // Build a map from line offset → site for the firing sites. When siteOffsetMap is available
+  // (i.e. we have the full data.sites context), only highlight lines that belong to a currently-
+  // selected site. Fall back to all firingLineOffsets when the map isn't available (e.g. coverage tab).
+  const offsetToSite = new Map<number, SiteJson>();
+  if (siteOffsetMap) {
+    for (const s of blockSites) {
+      const off = siteOffsetMap.get(s.id);
+      if (off !== undefined) offsetToSite.set(off, s);
+    }
+  } else {
+    for (const off of block.firingLineOffsets) offsetToSite.set(off, blockSites[0]);
+  }
 
   lines.forEach((line, i) => {
     const row = document.createElement("div");
-    row.className = "code-line" + (firing.has(i) ? " firing" : "");
+    const site = offsetToSite.get(i);
+    row.className = "code-line" + (site ? " firing" : "");
     const html = Prism.highlight(line, Prism.languages.cpp, "cpp");
     row.innerHTML = html || "&nbsp;";
-    if (firing.has(i)) {
-      const s = blockSites[0];
-      const ex = collectSamples([s], gc);
+    if (site) {
+      const ex = collectSamples([site], gc);
       if (ex.length > 0) {
         row.title = "Sample:\n" + ex.slice(0, 3).join("\n");
         row.classList.add("has-sample");

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 SAP SE or an SAP affiliate company and jdklogs contributors
 // SPDX-License-Identifier: GPL-2.0-only
 
+import { Selector, selectorMatchesSite } from "./selector";
+import { LevelName, LEVELS } from "./types";
+
 /**
  * Tab 2: the full captured sample log for a GC, with its own search bar. The raw log is fetched
  * lazily (it can be several MB) from data/<version>.<gc>.log and rendered as a filterable,
@@ -9,12 +12,15 @@
 export class LogSearch {
   private lines: string[] = [];
   private loadedFor = "";
+  private selectors: Selector[] = [];
+  private currentQuery = "";
   constructor(
     private readonly root: HTMLElement,
     private readonly dataBase: string
   ) {}
 
-  async show(version: string, gc: string, logFile: string | undefined): Promise<void> {
+  async show(version: string, gc: string, logFile: string | undefined, selectors: Selector[] = []): Promise<void> {
+    this.selectors = selectors;
     this.root.innerHTML = "";
     if (!logFile) {
       this.root.appendChild(note("No sample log captured for this version/GC."));
@@ -37,7 +43,14 @@ export class LogSearch {
     this.render("");
   }
 
+  /** Re-apply the current selectors without reloading the log file. */
+  updateSelectors(selectors: Selector[]): void {
+    this.selectors = selectors;
+    if (this.loadedFor && this.root.offsetParent !== null) this.render(this.currentQuery);
+  }
+
   private render(query: string): void {
+    this.currentQuery = query;
     this.root.innerHTML = "";
     const search = document.createElement("input");
     search.type = "search";
@@ -48,10 +61,15 @@ export class LogSearch {
     this.root.appendChild(search);
 
     const q = query.toLowerCase();
-    const matched = q ? this.lines.filter((l) => l.toLowerCase().includes(q)) : this.lines;
+    const configFiltered = this.selectors.length > 0
+      ? this.lines.filter((l) => lineMatchesSelectors(l, this.selectors))
+      : this.lines;
+    const matched = q ? configFiltered.filter((l) => l.toLowerCase().includes(q)) : configFiltered;
     const count = document.createElement("div");
     count.className = "log-count";
-    count.textContent = `${matched.length.toLocaleString()} line(s)` + (q ? ` matching "${query}"` : "");
+    count.textContent = `${matched.length.toLocaleString()} line(s)` +
+      (q ? ` matching "${query}"` : "") +
+      (this.selectors.length > 0 ? ` (filtered by log config)` : "");
     this.root.appendChild(count);
 
     const pre = document.createElement("pre");
@@ -131,4 +149,57 @@ function note(text: string): HTMLElement {
   d.className = "note";
   d.textContent = text;
   return d;
+}
+
+/**
+ * Parse the level and tags from a JVM log line's decorator groups.
+ * Format: `[<iso-ts>][<uptime>s][<level>][<tag1>,<tag2>,...] message`
+ * Returns null if the line has no recognisable level+tags decorators.
+ */
+function parseLineDecorators(line: string): { level: LevelName; tags: string[] } | null {
+  let level: LevelName | null = null;
+  let tags: string[] | null = null;
+  let i = 0;
+  while (i < line.length && line[i] === "[") {
+    const end = line.indexOf("]", i);
+    if (end === -1) break;
+    const inner = line.slice(i + 1, end).trim();
+    i = end + 1;
+    if (ISO_TIMESTAMP.test(inner)) continue; // wall-clock timestamp — skip
+    const word = inner.toLowerCase();
+    if (level === null && (LEVELS as readonly string[]).includes(word)) {
+      level = word as LevelName;
+      continue;
+    }
+    // Tags group: only letters, digits, underscores, commas — no dots or colons (rules out uptime/pid)
+    if (level !== null && tags === null && /^[a-z][a-z0-9_]*(,[a-z][a-z0-9_]*)*\s*$/i.test(inner)) {
+      tags = inner.split(",").map((t) => t.trim().toLowerCase());
+      break;
+    }
+  }
+  if (level === null || tags === null) return null;
+  return { level, tags };
+}
+
+/**
+ * Returns true if the log line should be shown given the active selectors.
+ * Uses the same last-match-wins semantics as HotSpot: the last selector whose tags match the
+ * line's tag set wins; the line is shown iff that selector's level ≤ the line's level.
+ * Lines with unparseable decorators are always shown (we can't know, so we err on the side of
+ * inclusion — e.g. blank lines, header lines, continuation lines).
+ */
+function lineMatchesSelectors(line: string, selectors: Selector[]): boolean {
+  const parsed = parseLineDecorators(line);
+  if (!parsed) return true;
+  const { level, tags } = parsed;
+  let winner: Selector | null = null;
+  for (const sel of selectors) {
+    if (selectorMatchesSite(sel, tags)) winner = sel;
+  }
+  if (!winner) return false;
+  if (winner.level === "off") return false;
+  // Line is shown if the configured level is at or below the line's verbosity level.
+  const lineRank = (LEVELS as readonly string[]).indexOf(level);
+  const selRank = (LEVELS as readonly string[]).indexOf(winner.level);
+  return selRank <= lineRank;
 }

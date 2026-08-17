@@ -4,7 +4,7 @@
 import "prismjs/themes/prism.css";
 import "./style.css";
 import { CoverageData, CoverageRule, JfrMapping, SiteJson, TagsData, VersionData } from "./types";
-import { firingSites, parseConfig } from "./selector";
+import { firingSites, parseConfig, Selector } from "./selector";
 import { analyzeConfig, estimateVolume, Warning } from "./analysis";
 import { suggest, applySuggestion, nearestTag, Suggestion } from "./autocomplete";
 import { Wizard } from "./wizard";
@@ -70,6 +70,17 @@ async function loadData(version: string): Promise<void> {
   state.tags = tags;
   state.mappings = mappings as JfrMapping[];
   state.coverage = (coverage as CoverageData).rules ?? [];
+
+  // Build co-occurrence map from the loaded sites: tag → set of tags it appears with.
+  const ct = new Map<string, Set<string>>();
+  for (const s of data.sites) {
+    for (const t of s.tags) {
+      const set = ct.get(t) ?? new Set<string>();
+      for (const u of s.tags) if (u !== t) set.add(u);
+      ct.set(t, set);
+    }
+  }
+  coTags = ct;
 }
 
 /** Probe each candidate `<version>.json` in parallel and keep only those that respond OK, in
@@ -124,6 +135,10 @@ let logSearch: LogSearch | null = null;
 // the autocomplete dropdown (dead-tag signal); recomputed in updateWizardAvailability().
 let availableTags: Set<string> | null = null;
 
+// Co-occurrence map: tag → set of tags that appear with it in at least one log site. Built once
+// after loadData() and used to bias autocomplete suggestions when the cursor follows a `+`.
+let coTags: Map<string, Set<string>> | null = null;
+
 // Cross-version site presence, built after first paint from ALL present versions' JSON. Null until
 // built (and stays effectively empty when only one version is present — see versionBadge()).
 let presence: Presence | null = null;
@@ -131,7 +146,7 @@ let presence: Presence | null = null;
 // Current derived results, recomputed on config/gc/version change and consumed lazily per tab. Only
 // the active tab is rendered on each change; the others are marked dirty and rendered when shown —
 // rendering all three (each up to ~2600 highlighted blocks) on every keystroke was the bottleneck.
-interface Derived { fires: SiteJson[]; warnings: Warning[]; vol: ReturnType<typeof estimateVolume>; }
+interface Derived { fires: SiteJson[]; warnings: Warning[]; vol: ReturnType<typeof estimateVolume>; selectors: Selector[]; }
 let derived: Derived | null = null;
 const rendered = { sites: false, summary: false, coverage: false };
 
@@ -178,7 +193,7 @@ function recompute(): void {
   const fires = filterByGc(filterByPlatform(allFires, state.platform), state.gc);
   const warnings = error ? [] : analyzeConfig(selectors, state.data.sites);
   const vol = estimateVolume(fires, state.data.volumeStats, state.gc);
-  derived = { fires, warnings, vol };
+  derived = { fires, warnings, vol, selectors: error ? [] : selectors };
 
   const btn = document.querySelector<HTMLElement>("#tab-summary-btn");
   if (btn) btn.textContent = warnings.length > 0 ? `Summary · ${warnings.length}` : "Summary";
@@ -235,7 +250,11 @@ function renderPanel(panelId: string): void {
 function rerender(): void {
   recompute();
   rendered.sites = rendered.summary = rendered.coverage = false;
-  renderPanel(activePanelId());
+  const panel = activePanelId();
+  renderPanel(panel);
+  if (panel === "tab-log" && logSearch && state.data && derived) {
+    logSearch.updateSelectors(derived.selectors);
+  }
 }
 
 /**
@@ -273,12 +292,12 @@ function setupAutocomplete(): void {
 
   const refresh = () => {
     if (!state.tags) return;
-    items = suggest(input.value, input.selectionStart ?? input.value.length, state.tags.tags, availableTags ?? undefined);
+    items = suggest(input.value, input.selectionStart ?? input.value.length, state.tags.tags, availableTags ?? undefined, coTags ?? undefined);
     drop.innerHTML = "";
     if (items.length === 0) { close(); return; }
     items.forEach((s, i) => {
       const el = document.createElement("div");
-      el.className = "ac-item" + (i === active ? " active" : "") + (s.dead ? " ac-dead" : "");
+      el.className = "ac-item" + (i === active ? " active" : "") + (s.dead ? " ac-dead" : "") + (s.coTagged ? " ac-cotag" : "");
       el.innerHTML = `<span class="ac-text">${s.text}</span>` + (s.detail ? `<span class="ac-detail">${s.detail}</span>` : "");
       el.addEventListener("mousedown", (e) => {
         e.preventDefault();
@@ -324,7 +343,8 @@ function activateTab(panelId: string): void {
   if (intro) intro.textContent = TAB_INTROS[panelId] ?? "";
   renderPanel(panelId);
   if (panelId === "tab-log" && logSearch && state.data) {
-    logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc]);
+    const selectors = derived?.selectors ?? [];
+    logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc], selectors);
   }
 }
 
@@ -412,7 +432,7 @@ async function main(): Promise<void> {
     rerender();
     renderSelectorContext();
     if ($("#tab-log").classList.contains("active") && logSearch && state.data)
-      logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc]);
+      logSearch.show(state.version, state.gc, state.data.sampleLogFiles[state.gc], derived?.selectors ?? []);
   });
 
   // platform selector (hides OS-specific sites that can't run on the chosen platform)
