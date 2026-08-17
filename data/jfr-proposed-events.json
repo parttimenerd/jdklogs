@@ -1,5 +1,5 @@
 {
-  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 25 oracle (jfr metadata, 194 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 adds jdk.StringDeduplication (byte-level fields included — our proposed StringDeduplicationStatistics is now REDUNDANT; see rationale). JDK 27 adds jdk.ShenandoahPromotionInformation (in metadata.xml, not yet released). JDK-8365306 (NativeHeapTrim JFR, PR #26756, closed 2025-12): PR was blocked on ProcessSize umbrella design — a narrow trim-only re-proposal would likely be accepted per Erik Gahlin. G1 now has UseGCOverheadLimit (JDK-8212084, merged JDK 26, PR #27950) but no JFR event. JEP 521 Generational Shenandoah became production-ready in JDK 25 (merged May 2025). None of the other 10 proposed events have upstream work in progress. Critique pass 3 applied 2026-08-17: G1 log format strings corrected from source (print_refinement_stats starts with 'Refinement took', not 'Concurrent refinement'); ZDirectorRule missing fields added (gcCPUTime, gcWorkers, acceptableGCInterval, timeSinceLastGC, freePercent, interval, proactiveEnabled); ZNMethodRegistration tableRebuilt noted as needing new instrumentation; ShenandoahCardStatistics spurious dirtyObjs field removed (#ifndef PRODUCT guard noted); ShenandoahMMU gcId added, periodic-sample path noted; ShenandoahReclaimProgress early-exit semantics corrected (fields 2-4 nullable); PSAdaptiveSizePolicy minMutatorIntervalSec removed (does not exist), desiredEdenDelta semantics fixed, pauseMs renamed to minorPauseMs; NativeHeapTrim deltaBytes corrected to signed long; StringDeduplicationStatistics marked redundant.",
+  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 26 oracle (196 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 (196 events) added jdk.StringDeduplication + jdk.FinalFieldMutation vs JDK 25 (194 events). JDK 27-dev master adds jdk.ShenandoahPromotionInformation. JDK-8365306 (NativeHeapTrim JFR, PR #26756, closed 2025-12): PR was blocked on ProcessSize umbrella design — narrow trim-only re-proposal recommended. G1 now has UseGCOverheadLimit (JDK-8212084, merged JDK 26, PR #27950) but no JFR event. JEP 521 Generational Shenandoah became production-ready in JDK 25. None of the other proposed events have upstream work in progress as of 2026-08-17. Critique pass 4 applied 2026-08-17: confirmed 0 of 18 proposals are covered by JDK 26/27-dev; promoted G1CollectionSetCandidates (corrected from working doc — two separate candidate paths: marking + retained) and G1HeapResize (drivers from g1HeapSizingPolicy.cpp) to JSON; added note on ShenandoahCollectionDecision zScore/marginOfError (belong to post-cycle path, NOT the decision point); ZForwardingRemembered kept as lower-priority note (log lines print addresses not counts, no aggregation infrastructure exists); G1PeriodicGCCheck / G1ConcurrentMarkTaskStats / GCWorkerConfiguration / G1RegionLivenessUpdate kept as notes in NEW_EVENTS.md.",
   "generatedFor": "trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info",
   "proposed": [
     {
@@ -8,7 +8,7 @@
       "priority": "low",
       "status": "REDUNDANT — jdk.StringDeduplication shipped in JDK 26 (PR #28015) with fields: inspected, known, shared, newStrings, newSize(bytes), replaced, deleted, deduplicated, deduplicatedSize(bytes), skippedDead, skippedIncomplete, skippedShared, processing(Tickspan), tableResize(Tickspan), tableCleanup(Tickspan). The only genuinely new fields this event would add over JDK 26 are cumulative totals: totalDedupedBytes and totalNewUnknownBytes (per-cycle values are already covered). If pursuing upstream, propose adding these two fields plus dedupedRatio to the existing jdk.StringDeduplication event rather than creating a new event.",
       "category": ["Java Virtual Machine", "GC", "Detailed"],
-      "rationale": "JDK 26 added jdk.StringDeduplication (JDK-8037914/PR #28015) covering per-cycle byte-level data including newSize, deduplicatedSize, and timing. The remaining gap is cumulative totals only. The fields newUnknown/dedupedBytes/newUnknownBytes in the original proposal are ALREADY in the JDK 26 event under different names (newStrings, deduplicatedSize, newSize respectively). Note: gcId must NOT be added — string deduplication runs concurrently on a dedicated thread and is not tied to any single GC cycle.",
+      "rationale": "JDK 26 added jdk.StringDeduplication (JDK-8037914/PR #28015) covering per-cycle byte-level data including newSize, deduplicatedSize, and timing. The remaining gap is cumulative totals only. Note: gcId must NOT be added — string deduplication runs concurrently on a dedicated thread and is not tied to any single GC cycle.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "duration", "label": "Duration" },
@@ -29,14 +29,14 @@
       "label": "Shenandoah Card Statistics",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
-      "rationale": "Shenandoah generational (only, JEP 521 production-ready in JDK 25) remembered-set card scanning emits cumulative dirty/clean card statistics per GC cycle with no JFR event. IMPORTANT: the log() method is wrapped in #ifndef PRODUCT — this event would only fire in debug/fastdebug builds unless the JFR emission point is moved to a product-build path. The per-worker stats are gated behind ShenandoahEnableCardStats (non-product); this event emits only the cumulative aggregate. dirtyScannedObjects maps to _dirty_scan_obj_cnt — the count of heap objects visited as a result of dirty card scans (distinct from dirtyCards = card-table slot count). The _alternation_cnt field (consecutive dirty/clean alternation count, a cache-efficiency indicator) is available in the class but not in the primary log line; could be added. maxConsecutiveDirtyCards reflects card-table clustering that affects scan efficiency.",
+      "rationale": "Shenandoah generational (only, JEP 521 production-ready in JDK 25) remembered-set card scanning emits cumulative dirty/clean card statistics per GC cycle with no JFR event. IMPORTANT: the log() method is wrapped in #ifndef PRODUCT — this event would only fire in debug/fastdebug builds unless the JFR emission point is moved to a product-build path. The per-worker stats are gated behind ShenandoahEnableCardStats (non-product); this event emits only the cumulative aggregate. dirtyScannedObjects maps to _dirty_scan_obj_cnt — the count of heap objects visited as a result of dirty card scans (distinct from dirtyCards = card-table slot count). maxConsecutiveDirtyCards reflects card-table clustering that affects scan efficiency.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "dirtyCards", "label": "Dirty Card Table Slots (_dirty_card_cnt)" },
         { "type": "long", "name": "cleanCards", "label": "Clean Card Table Slots (_clean_card_cnt)" },
         { "type": "long", "name": "maxConsecutiveDirtyCards", "label": "Max Consecutive Dirty Card Run (_max_dirty_run)" },
         { "type": "long", "name": "maxConsecutiveCleanCards", "label": "Max Consecutive Clean Card Run (_max_clean_run)" },
-        { "type": "long", "name": "dirtyScannedObjects", "label": "Objects Scanned via Dirty Cards (_dirty_scan_obj_cnt; only field for dirty-scan objects — dirtyObjs was erroneous)" },
+        { "type": "long", "name": "dirtyScannedObjects", "label": "Objects Scanned via Dirty Cards (_dirty_scan_obj_cnt; only field for dirty-scan objects)" },
         { "type": "long", "name": "alternationCount", "label": "Dirty/Clean Card Alternation Count (_alternation_cnt; cache-efficiency indicator)" }
       ],
       "replaces": [
@@ -57,7 +57,7 @@
       "label": "Shenandoah Minimum Mutator Utilization",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
-      "rationale": "Shenandoah's MMU tracker prints GC utilization (GCU) and mutator utilization (MU) per completed phase with no JFR analogue. Not redundant with jdk.GCCPUTime: GCCPUTime gives raw user/sys/real CPU slices; this gives normalized MU% over the phase window. Low muPercent directly indicates mutator starvation — a production-critical signal. There are TWO distinct emission paths: (1) update_utilization() at end of each GC cycle — phase is one of 'Concurrent Young GC', 'Concurrent Global GC', 'Concurrent Bootstrap GC', 'Mixed Concurrent GC', 'Full GC', 'Degenerated GC'; periodSeconds = gc_cycle_period; (2) report() periodic-sample path (every ~5s default) — phase would be absent/null; periodSeconds = time_delta since last sample. These paths should ideally be separate events or distinguished by an isPeriodicSample boolean. gcId must be included for correlation with jdk.GarbageCollection and other GC events (source: _most_recent_gcid tracked in ShenandoahMmuTracker).",
+      "rationale": "Shenandoah's MMU tracker prints GC utilization (GCU) and mutator utilization (MU) per completed phase with no JFR analogue. NOT redundant with jdk.G1MMU: G1MMU measures pause-time compliance within a fixed time-slice window (gcTime vs pauseTarget in ms); ShenandoahMMU measures GCU%/MU% utilization fractions over the entire phase window — semantically different metrics answering different questions. Low muPercent directly indicates mutator starvation. There are TWO distinct emission paths: (1) update_utilization() at end of each GC cycle; (2) report() periodic-sample path (every ~5s). isPeriodicSample boolean distinguishes them. gcId from _most_recent_gcid is needed for GC event correlation.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "int", "name": "gcId", "label": "GC Identifier (_most_recent_gcid; needed for GC event correlation)" },
@@ -90,7 +90,7 @@
       "label": "Shenandoah Reclaim Progress",
       "priority": "medium",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
-      "rationale": "shenandoahMetrics.cpp's is_good_progress() evaluates four independent dimensions after each cycle. IMPORTANT early-exit semantics: the function returns on the FIRST dimension that passes (or after free-space fails). This means not all 4 dimensions are logged every cycle. Typical paths: (a) only free-space logged if free-space check fails immediately; (b) free-space + used-space logged if free-space passes but used-space also passes early; etc. Fields for dimensions 2-4 are NULLABLE — they may not be populated on a given invocation. A consumer must handle null/absent values. Fragmentation values are fractions (0.0-1.0) in source (_if_before - current_if computes the delta); the log multiplies by 100 before printing. Store as percentage (0.0-100.0) for usability. freeNeeded = (softMaxCapacity/100) * ShenandoahCriticalFreeThreshold (bytes). usedNeededToFree = ShenandoahHeapRegion::region_size_bytes() — effectively a fixed constant, included for self-containedness. goodProgress=false in any dimension signals risk of degenerated GC fallback. consecutiveDegenWithoutProgress (from ShenandoahCollectorPolicy._consecutive_degenerated_gcs_without_progress) is a high-value diagnostic missing from this event — consider adding.",
+      "rationale": "shenandoahMetrics.cpp's is_good_progress() evaluates four independent dimensions after each cycle. IMPORTANT early-exit semantics: the function returns on the FIRST dimension that passes (or after free-space fails) — not all 4 dimensions are logged every cycle. Fields for dimensions 2-4 are NULLABLE. Fragmentation values are fractions (0.0-1.0) in source; stored as percentage (0.0-100.0) here for usability. freeNeeded = (softMaxCapacity/100) * ShenandoahCriticalFreeThreshold (bytes). usedNeededToFree = ShenandoahHeapRegion::region_size_bytes() — effectively a fixed constant. goodProgress=false in any dimension signals risk of degenerated GC fallback. Note: _consecutive_degenerated_gcs_without_progress from ShenandoahCollectorPolicy is a high-value additional field — if it reaches CONSECUTIVE_BAD_DEGEN_PROGRESS_THRESHOLD (2) a Full GC fires next.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "freeActual", "label": "Free Space Available (bytes)" },
@@ -135,7 +135,7 @@
       "label": "ZGC NMethod Registration",
       "priority": "low",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Z"],
-      "rationale": "ZGC requires all nmethods to have load barriers patched (registered). The NMethod table tracks live registrations and cumulative unregistrations. High unregistered counts can indicate classloader churn or code cache pressure. Field semantics from ZNMethodTable.cpp: registeredNMethods = _nregistered (current live count); staleNMethodSlots = _nunregistered (entries unregistered but not yet pruned from hash table — NOT a cumulative total since JVM start). tableRebuilt: DESIGN GAP — no per-cycle tableRebuilt boolean exists in ZStatNMethods::print() which only reads _nregistered/_nunregistered. A rebuild is detectable via a debug-level log in ZNMethodTable::rebuild() but is a separate code path. To make tableRebuilt accurate, ZNMethodTable would need a new atomic counter read at stat time — this requires new instrumentation beyond the existing log. The ZNMethodTable rebuild triggers (shrink/grow/prune thresholds) and old/new table sizes are logged in rebuild() at debug level; a dedicated jdk.ZNMethodTableRebuild event would be more appropriate. Production validation: low — no external evidence found that nmethod table overhead is a common production problem. Recommend de-prioritizing this event.",
+      "rationale": "ZGC requires all nmethods to have load barriers patched (registered). Field semantics from ZNMethodTable.cpp: registeredNMethods = _nregistered (current live count); staleNMethodSlots = _nunregistered (entries unregistered but not yet pruned — zombie entries pending table rebuild, NOT a cumulative total). tableRebuilt: DESIGN GAP — no per-cycle tableRebuilt boolean exists in ZStatNMethods::print(); requires new instrumentation. Production validation: low — no external evidence found that nmethod table overhead is a common production problem. Recommend de-prioritizing.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "registeredNMethods", "label": "Currently Registered NMethods (_nregistered)" },
@@ -155,7 +155,7 @@
       "label": "GC Overhead Limit Exceeded",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed"],
-      "rationale": "Fires immediately before the JVM throws OutOfMemoryError: GC Overhead Limit exceeded. Now implemented in both G1 (JDK-8212084, merged JDK 26 PR #27950) and Parallel GC. The three diagnostic fields make the event self-contained — without them a consumer cannot tell whether the OOM was time-driven or space-driven. IMPORTANT: Parallel GC logs TWO separate free-space values (young + old gen), while G1 logs one combined value. The event must handle both: include freeSpaceYoungPercent and freeSpaceOldPercent for Parallel (both null for G1). gcTimePercent: G1 uses long_term_gc_time_ratio()*100; Parallel uses 100-mutator_time_percent(). Both are 0-100 percentages. consecutiveViolations = _gc_overhead_counter (increments on each consecutive violating GC, resets to zero on a clean GC — it is the counter, not the threshold; threshold is GCOverheadLimitThreshold flag, default 5). collector field distinguishes G1 from Parallel since free-space field population differs. gcId is GCId::peek() — last completed GC id (approximate, not an active GC).",
+      "rationale": "Fires immediately before the JVM throws OutOfMemoryError: GC Overhead Limit exceeded. Now implemented in both G1 (JDK-8212084, merged JDK 26 PR #27950) and Parallel GC — but no JFR event was added. Parallel GC logs TWO separate free-space values (young + old gen); G1 logs one combined value. gcTimePercent: G1 uses long_term_gc_time_ratio()*100; Parallel uses 100-mutator_time_percent(). consecutiveViolations = _gc_overhead_counter (resets to zero on a clean GC; fires OOM at GCOverheadLimitThreshold=5). gcId is GCId::peek() — last completed GC id (approximate).",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "int", "name": "gcId", "label": "Last Completed GC Identifier (GCId::peek(); approximate)" },
@@ -194,7 +194,7 @@
       "label": "Native Heap Trim",
       "priority": "high",
       "category": ["Java Virtual Machine", "Runtime"],
-      "rationale": "The JVM periodically calls malloc_trim/madvise to return RSS to the OS after GC (NativeHeapTrimmer thread, -XX:TrimNativeHeapInterval). The log line records before/after RSS and delta, but no JFR event carries this. Especially valuable on containerised deployments where RSS spikes are monitored closely. detailsAvailable=false when /proc/self/status is unavailable (non-Linux or restricted containers). JDK-8365306 (PR #26756) was closed 2025-12 due to design dispute about a ProcessSize umbrella event — the NativeHeapTrim event itself was not objected to by Erik Gahlin; a narrow trim-only re-proposal is recommended. deltaBytes: CORRECTED from previous design — the source computes an unsigned delta plus a sign char; deltaBytes should be a signed long (afterBytes - beforeBytes); negative = RSS reduced (trimmed), positive = RSS grew. trimCount = _num_trims_performed (uint64_t, incremented before logging, so first trim = 1, cumulative since JVM start).",
+      "rationale": "The JVM periodically calls malloc_trim/madvise to return RSS to the OS (NativeHeapTrimmer thread, -XX:TrimNativeHeapInterval). Especially valuable on containerised deployments. JDK-8365306 (PR #26756) was closed 2025-12 — the NativeHeapTrim event itself was not objected to; a narrow trim-only re-proposal is recommended. deltaBytes is SIGNED: afterBytes - beforeBytes (negative = RSS reduced, positive = RSS grew). trimCount = _num_trims_performed (uint64_t, first = 1). detailsAvailable=false when /proc/self/status unavailable.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "duration", "label": "Duration" },
@@ -222,11 +222,11 @@
       "label": "G1 Concurrent Refinement Sweep",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
-      "rationale": "G1 concurrent refinement sweeps the dirty-card queue (DCQS) between pauses. This event fires once per sweep (potentially multiple times per GC pause). CORRECTED log format: print_refinement_stats() STARTS WITH 'Refinement took %.2fms' not 'Concurrent refinement: wanted'. The 'wanted' / 'pendingFromGC' fields were incorrect — they come from adjust_threads_wanted() in g1ConcurrentRefine.cpp (a separate function). The actual log has: total duration, pre-sweep and card-refine sub-durations, and 8 card categories. cardsNoCrossRegion = no_cross_region (within-region references filtered early, high value = good heap locality). The JDK 25 write barrier redesign (JEP 522) changed refinement behavior significantly — this event is needed to understand the new refinement dynamics. Counterpart jdk.G1ConcurrentRefinementPolicy fires from g1Policy.cpp record_young_collection_end() and adjust_threads_wanted() separately.",
+      "rationale": "G1 concurrent refinement sweeps the dirty-card queue (DCQS) between pauses. Fires once per sweep (potentially multiple times per GC pause). Log format verified from source: print_refinement_stats() starts with 'Refinement took %.2fms'. The JDK 25 write barrier redesign (JEP 522) changed refinement behavior significantly — this event is needed to understand the new refinement dynamics. cardsNoCrossRegion (no_cross_region in source) = within-region references filtered early; high = good heap locality. All fields verified against actual g1ConcurrentRefine.cpp format string.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "duration", "label": "Duration" },
-        { "type": "double", "name": "preSweepMs", "label": "Pre-Sweep Duration (ms) — time before card refinement starts" },
+        { "type": "double", "name": "preSweepMs", "label": "Pre-Sweep Duration (ms)" },
         { "type": "double", "name": "cardRefineMs", "label": "Card Refinement Duration (ms)" },
         { "type": "long", "name": "cardsScanned", "label": "Cards Scanned Total" },
         { "type": "long", "name": "cardsClean", "label": "Cards Already Clean (no work needed)" },
@@ -250,18 +250,18 @@
       "label": "G1 Concurrent Refinement Policy Update",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
-      "rationale": "Fires once per young-GC pause. CORRECTED: the claimed format string 'Concurrent refinement: wanted %u, pending cards target %zu, predicted refine rate %.2f...' does not exist verbatim. The actual sources are THREE separate log statements: (1) g1Policy.cpp record_young_collection_end() logs 'GC refinement: goal: %zu / %1.2fms, actual: %zu / %1.2fms, %s' with pendingCardsTarget, goalMs, pendingCards, actualMs, exceededGoalSuffix; (2) g1ConcurrentRefine.cpp adjust_threads_wanted() logs wanted + predicted + goal + rates; (3) separate refine/dirty rate logs. A JFR event would naturally aggregate these at the pause boundary. threadsWanted and pendingCardsFromGC come from adjust_threads_wanted() in g1ConcurrentRefine.cpp (not g1Policy.cpp). predictedRefineRate comes from record_refinement_stats(). predictedPendingCards (not in original proposal) is logged by adjust_threads_wanted() alongside threadsWanted. exceededGoal is modeled as boolean (source: string suffix ' (exceeded goal)' vs empty). The pending card target and goal window are the primary levers for diagnosing whether adaptive refinement keeps up with write-barrier pressure.",
+      "rationale": "Fires once per young-GC pause. Aggregates three separate log statements: (1) g1Policy.cpp record_young_collection_end() — pendingCardsTarget, goalMs, pendingCards, exceededGoal; (2) g1ConcurrentRefine.cpp adjust_threads_wanted() — threadsWanted, pendingCardsFromGC, predictedPendingCards, timeUntilNextGC, rates. The pending card target and goal window are the primary levers for diagnosing whether adaptive refinement keeps up with write-barrier pressure.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "int", "name": "threadsWanted", "label": "Refinement Threads Wanted (from adjust_threads_wanted())" },
         { "type": "long", "name": "pendingCards", "label": "Cards Pending in Queue (actual at pause time)" },
         { "type": "long", "name": "pendingCardsFromGC", "label": "Cards Pending Due to GC Activity (subset of pendingCards; from adjust_threads_wanted())" },
         { "type": "long", "name": "pendingCardsTarget", "label": "Target Pending Cards (policy goal; primary adaptive sizing lever)" },
-        { "type": "long", "name": "predictedPendingCards", "label": "Predicted Pending Cards at Next GC (from adjust_threads_wanted(); new field not in original proposal)" },
+        { "type": "long", "name": "predictedPendingCards", "label": "Predicted Pending Cards at Next GC (from adjust_threads_wanted())" },
         { "type": "double", "name": "predictedRefineRate", "label": "Predicted Refinement Rate (cards/ms; from record_refinement_stats())" },
         { "type": "double", "name": "dirtiedCardRate", "label": "Dirtied Card Rate (cards/ms; from record_dirtying_stats())" },
         { "type": "double", "name": "goalMs", "label": "Refinement Goal Window (ms; pending_cards_time_goal_ms)" },
-        { "type": "double", "name": "timeUntilNextGC", "label": "Time Until Next GC Estimated (ms; time-until-next-gc from adjust_threads_wanted(); new field)" },
+        { "type": "double", "name": "timeUntilNextGC", "label": "Time Until Next GC Estimated (ms; time-until-next-gc from adjust_threads_wanted())" },
         { "type": "boolean", "name": "exceededGoal", "label": "Sweep Exceeded Goal Window (source: 'exceeded goal' suffix in record_young_collection_end())" }
       ],
       "replaces": [
@@ -278,36 +278,129 @@
       ]
     },
     {
+      "event": "jdk.G1CollectionSetCandidates",
+      "label": "G1 Collection Set Candidates",
+      "priority": "high",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
+      "rationale": "G1's mixed-GC region selection reasoning is entirely invisible in JFR today. jdk.EvacuationInformation records the outcome (regions evacuated, bytes); this event records the DECISION: how many candidates were available, how many selected, whether time budget was exceeded, and why mixed GCs stopped. There are TWO separate candidate paths: (1) MARKING candidates — regions identified by concurrent marking as high-garbage; (2) RETAINED candidates — regions from previous cycles that were deferred. Both paths have equivalent log structures and should be covered by a single event with a candidateType discriminator. IMPORTANT corrections from source audit: (1) proposed 'predictedTimeExceeded' boolean does not exist as a variable — source has 'Added %u ... although the predicted time was too high' (count of over-budget regions added). (2) 'reason' enum is implementable but requires synthesizing from three distinct stop conditions. (3) 'groups' (card-set groups, not region count) is logged separately and adds context. (4) predicted initial/optional times and optional threshold are available from the Finish log. No existing event covers this; jdk.G1AdaptiveIHOP/jdk.G1BasicIHOP cover IHOP (marking trigger), not collection-set selection.",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "String", "name": "candidateType", "label": "Candidate Type ('Marking' or 'Retained' — two separate selection passes per mixed GC)" },
+        { "type": "int", "name": "minRegions", "label": "Minimum Regions to Add (min_old_cset_length)" },
+        { "type": "int", "name": "maxRegions", "label": "Maximum Regions to Add (max_old_cset_length)" },
+        { "type": "int", "name": "availableRegions", "label": "Candidate Regions Available (from_marking_groups->num_regions() or retained equivalent)" },
+        { "type": "int", "name": "availableGroups", "label": "Candidate Card-Set Groups Available (from_marking_groups->length())" },
+        { "type": "int", "name": "selectedRegions", "label": "Regions Selected (initial + normal, from 'Finish' log: selected_groups.num_regions())" },
+        { "type": "int", "name": "optionalRegions", "label": "Optional Regions Selected (_optional_groups.num_regions())" },
+        { "type": "int", "name": "overBudgetRegions", "label": "Regions Added Despite Predicted Time Too High (num_expensive_regions; 0 if none)" },
+        { "type": "double", "name": "predictedInitialTimeMs", "label": "Predicted Time for Initial Regions (ms; from Finish log)" },
+        { "type": "double", "name": "predictedOptionalTimeMs", "label": "Predicted Time for Optional Regions (ms; from Finish log)" },
+        { "type": "double", "name": "timeRemainingMs", "label": "Remaining GC Time Budget (ms; from Start and Finish logs)" },
+        { "type": "String", "name": "stopReason", "label": "Why selection stopped: 'exhausted' | 'max_regions_reached' | 'min_regions_reached' | 'time_too_high' | 'none_available' (synthesized from stop-condition log lines)" },
+        { "type": "boolean", "name": "continueMixed", "label": "Will mixed GCs continue next cycle (next_gc_should_be_mixed() from g1Policy.cpp)" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
+          "function": "void G1CollectionSet::add_marking_candidates()",
+          "logLine": "Start adding marking candidates to collection set. Min %u regions, max %u regions, available %u regions (%u groups), time remaining %1.2fms, optional threshold %1.2fms"
+        },
+        {
+          "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
+          "function": "void G1CollectionSet::add_marking_candidates()",
+          "logLine": "Finish adding marking candidates to collection set. Initial: %u regions (%u groups), optional: %u regions (%u groups), predicted initial time: %1.2fms, predicted optional time: %1.2fms, time remaining: %1.2fms"
+        },
+        {
+          "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
+          "function": "void G1CollectionSet::add_marking_candidates()",
+          "logLine": "Added %u marking candidates to collection set although the predicted time was too high."
+        },
+        {
+          "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
+          "function": "void G1CollectionSet::add_marking_candidates()",
+          "logLine": "Marking candidates exhausted."
+        },
+        {
+          "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
+          "function": "void G1CollectionSet::add_retained_candidates()",
+          "logLine": "Start adding retained candidates to collection set. Min %u regions, available %u regions (%u groups), time remaining %1.2fms, optional remaining %1.2fms"
+        },
+        {
+          "file": "src/hotspot/share/gc/g1/g1CollectionSet.cpp",
+          "function": "void G1CollectionSet::add_retained_candidates()",
+          "logLine": "Finish adding retained candidates to collection set. Initial: %u, optional: %u, pinned: %u, predicted initial time: %1.2fms, predicted optional time: %1.2fms, time remaining: %1.2fms optional time remaining %1.2fms"
+        },
+        {
+          "file": "src/hotspot/share/gc/g1/g1Policy.cpp",
+          "function": "void G1Policy::decide_on_concurrent_start_pause()",
+          "logLine": "do not continue mixed GCs (candidate old regions not available)"
+        }
+      ]
+    },
+    {
+      "event": "jdk.G1HeapResize",
+      "label": "G1 Heap Resize Decision",
+      "priority": "medium",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
+      "rationale": "G1's adaptive heap resize (expand/shrink) is driven by CPU-usage feedback in g1HeapSizingPolicy.cpp. The size delta is computable from jdk.G1HeapSummary before/after, but the DRIVERS (short/long-term GC-CPU-usage %, thresholds, scale factor, which trigger fired) are in no existing event — these are the actual tuning signal for G1ExpandByPercent / GCTimeRatio. Not covered by jdk.G1AdaptiveIHOP (which covers old-gen occupancy threshold for marking, not heap capacity resize). Field corrections from source audit: (1) 'reason' DOES NOT EXIST as a source variable — the decision is driven by _gc_cpu_usage_deviation_counter reaching G1CPUUsageExpandThreshold or -G1CPUUsageShrinkThreshold. (2) freeRegions and regionsNeededForAlloc come from SHRINK LOG ONLY — null/0 for expansion. (3) scaleFactor is shrink-path-only. (4) 'Heap resize triggers' log is at TRACE level (not debug). (5) The expand log has lowerThreshold/upperThreshold/gcCpuUsageTarget — missing from original proposal. direction = expand (bool in source, tristate derivable from expand + resize_bytes==0).",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "double", "name": "shortTermGcCpuUsagePct", "label": "Short-Term GC CPU Usage % (short_term_gc_cpu_usage; driving input for resize decision)" },
+        { "type": "double", "name": "longTermGcCpuUsagePct", "label": "Long-Term GC CPU Usage % (long_term_gc_cpu_usage)" },
+        { "type": "double", "name": "lowerThresholdPct", "label": "Lower CPU Usage Threshold % (lower_threshold; below this → eligible to shrink)" },
+        { "type": "double", "name": "upperThresholdPct", "label": "Upper CPU Usage Threshold % (upper_threshold; above this → eligible to expand)" },
+        { "type": "double", "name": "gcCpuUsageTargetPct", "label": "GC CPU Usage Target % (gc_cpu_usage_target; desired steady-state value)" },
+        { "type": "boolean", "name": "expand", "label": "True = expanding heap, false = shrinking (from 'expand' bool in source; null if no resize)" },
+        { "type": "long", "name": "resizeBytes", "label": "Heap Resize Amount (bytes; 0 = no resize this evaluation; negative not possible — use expand field for direction)" },
+        { "type": "boolean", "name": "atLimit", "label": "Heap is at expansion or shrink limit (at_limit bool from source)" },
+        { "type": "double", "name": "scaleFactorPct", "label": "Shrink Scale Factor % (scale_factor*100; SHRINK PATH ONLY — null on expansion)" },
+        { "type": "int", "name": "freeRegions", "label": "Total Free Regions at Shrink Time (_g1h->num_free_regions(); SHRINK PATH ONLY)" },
+        { "type": "int", "name": "regionsNeededForAlloc", "label": "Regions Reserved for Allocation (needed_for_allocation; SHRINK PATH ONLY)" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp",
+          "function": "size_t G1HeapSizingPolicy::resize_amount()",
+          "logLine": "Heap resize: short term GC CPU usage %1.2f%% long term GC CPU usage %1.2f%% lower threshold %1.2f%% upper threshold %1.2f%% GC CPU usage target %1.2f%% at limit %s resize by %zuB expand %s"
+        },
+        {
+          "file": "src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp",
+          "function": "size_t G1HeapSizingPolicy::shrink_amount()",
+          "logLine": "Shrink log: scale factor %1.2f%% total free regions %u needed for alloc %u base targeted for shrinking %u resize_bytes %zd ( %zu regions)"
+        }
+      ]
+    },
+    {
       "event": "jdk.ZDirectorRule",
       "label": "ZGC Director Rule Evaluation",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Z"],
-      "rationale": "ZGC's director evaluates rules to decide whether to trigger GC. The gc+director log tag records each rule evaluation with context data. IMPORTANT design notes from source analysis: (1) Early-exit: make_minor_gc_decision and make_major_gc_decision return on first triggered rule — at most one Minor and one Major rule fires per cycle. (2) rule_minor_allocation_rate_static (UseDynamicNumberOfGCThreads=false) is a separate variant with NO gcCPUTime/gcWorkers/allocRateVariancePct fields. (3) Proactive rule has TWO mutually exclusive branches: enabled (AcceptableGCInterval/TimeSinceLastGC/TimeUntilGC) vs not-yet-enabled (UsedUntilEnabled/TimeUntilEnabled — logs but does not trigger). (4) rule_major_allocation_rate is an ESCALATION rule called from start_gc() (not make_major_gc_decision) — it upgrades a minor decision to major; ExtraYoungGCTimeForLookahead is in the log but was missing from the original proposal. (5) Timer rule applies to both generations (rule_minor_timer + rule_major_timer) with Interval field in log. (6) High Usage log has freePercent that was missing. (7) GCCPUTime and GCWorkers were missing from the dynamic AllocationRate rule. Soft/semi-hard/hard sub-variants of the dynamic allocation rate rule share the same log format — the triggering variant is not distinguishable from the log alone.",
+      "rationale": "ZGC's director evaluates rules to decide whether to trigger GC. IMPORTANT design notes: (1) Early-exit: make_minor/major_gc_decision return on first triggered rule — at most one Minor and one Major rule fires per cycle. (2) rule_minor_allocation_rate_static (UseDynamicNumberOfGCThreads=false) is a separate variant with NO gcCPUTime/gcWorkers/allocRateVariancePct. (3) Proactive rule has TWO mutually exclusive branches (enabled vs not-yet-enabled). (4) rule_major_allocation_rate is an ESCALATION rule from start_gc(), not make_major_gc_decision(). (5) Timer rule applies to both generations. (6) High Usage log has freePercent. Generation values 'Young'/'Old' align with JFR convention.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
-        { "type": "String", "name": "generation", "label": "Generation (Young/Old — aligns with ZYoungGarbageCollection/ZOldGarbageCollection; note: Major AllocationRate fires during minor decision escalation, not as independent Major decision)" },
+        { "type": "String", "name": "generation", "label": "Generation (Young/Old)" },
         { "type": "String", "name": "rule", "label": "Rule Name (Timer/AllocationRateDynamic/AllocationRateStatic/HighUsage/Warmup/Proactive)" },
-        { "type": "double", "name": "interval", "label": "Collection Interval (s; Timer rule: ZCollectionIntervalMinor or ZCollectionIntervalMajor flag value)" },
+        { "type": "double", "name": "interval", "label": "Collection Interval (s; Timer rule)" },
         { "type": "double", "name": "maxAllocRate", "label": "Max Allocation Rate (MB/s; AllocationRate rules only)" },
-        { "type": "double", "name": "allocRateVariancePct", "label": "Allocation Rate Variance % (Dynamic AllocationRate only; null for Static)" },
+        { "type": "double", "name": "allocRateVariancePct", "label": "Allocation Rate Variance % (Dynamic AllocationRate only)" },
         { "type": "long", "name": "freeBytes", "label": "Free Bytes (AllocationRate and HighUsage rules)" },
-        { "type": "double", "name": "freePercent", "label": "Free Heap Percent 0-100 (HighUsage rule only; was missing from original proposal)" },
+        { "type": "double", "name": "freePercent", "label": "Free Heap Percent 0-100 (HighUsage rule only)" },
         { "type": "double", "name": "timeUntilGC", "label": "Time Until GC (s; Timer and AllocationRate rules)" },
         { "type": "double", "name": "timeUntilOOM", "label": "Time Until OOM (s; Dynamic AllocationRate rule only)" },
         { "type": "double", "name": "gcDuration", "label": "Estimated GC Duration (s; AllocationRate rule only)" },
-        { "type": "double", "name": "gcCPUTime", "label": "GC CPU Time (s; Dynamic AllocationRate only: serial_gc_time + parallelizable_gc_time; was missing from original proposal)" },
-        { "type": "int", "name": "gcWorkers", "label": "GC Worker Threads Count (Dynamic AllocationRate only: actual_gc_workers; was missing from original proposal)" },
+        { "type": "double", "name": "gcCPUTime", "label": "GC CPU Time (s; Dynamic AllocationRate only)" },
+        { "type": "int", "name": "gcWorkers", "label": "GC Worker Threads Count (Dynamic AllocationRate only)" },
         { "type": "long", "name": "usedBytes", "label": "Heap Used (bytes; Warmup rule only)" },
         { "type": "long", "name": "usedThreshold", "label": "Warmup Threshold (bytes; Warmup rule only)" },
-        { "type": "boolean", "name": "proactiveEnabled", "label": "Proactive rule has reached its activation threshold (Proactive rule only; false = logs UsedUntilEnabled/TimeUntilEnabled branch, not the trigger branch)" },
-        { "type": "double", "name": "acceptableGCInterval", "label": "Acceptable GC Interval (s; Proactive rule enabled branch; was missing from original proposal)" },
-        { "type": "double", "name": "timeSinceLastGC", "label": "Time Since Last GC (s; Proactive rule enabled branch; was missing from original proposal)" },
-        { "type": "long", "name": "usedUntilEnabled", "label": "Used Until Proactive Enabled (bytes; Proactive rule disabled branch only)" },
-        { "type": "double", "name": "timeUntilEnabled", "label": "Time Until Proactive Enabled (s; Proactive rule disabled branch only)" },
+        { "type": "boolean", "name": "proactiveEnabled", "label": "Proactive rule has reached its activation threshold (false = UsedUntilEnabled/TimeUntilEnabled branch)" },
+        { "type": "double", "name": "acceptableGCInterval", "label": "Acceptable GC Interval (s; Proactive enabled branch)" },
+        { "type": "double", "name": "timeSinceLastGC", "label": "Time Since Last GC (s; Proactive enabled branch)" },
+        { "type": "long", "name": "usedUntilEnabled", "label": "Used Until Proactive Enabled (bytes; Proactive disabled branch only)" },
+        { "type": "double", "name": "timeUntilEnabled", "label": "Time Until Proactive Enabled (s; Proactive disabled branch only)" },
         { "type": "double", "name": "extraYoungGCTime", "label": "Extra Young GC Time (s; Major AllocationRate escalation rule)" },
         { "type": "double", "name": "oldGCTime", "label": "Old GC Time (s; Major AllocationRate escalation rule)" },
         { "type": "int", "name": "lookahead", "label": "Lookahead Factor (Major AllocationRate escalation rule)" },
-        { "type": "double", "name": "extraYoungGCTimeForLookahead", "label": "Extra Young GC Time for Lookahead (s; Major AllocationRate; was missing from original proposal)" }
+        { "type": "double", "name": "extraYoungGCTimeForLookahead", "label": "Extra Young GC Time for Lookahead (s; Major AllocationRate)" }
       ],
       "replaces": [
         {
@@ -357,26 +450,26 @@
       "label": "Parallel GC Adaptive Size Policy",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Parallel"],
-      "rationale": "Parallel GC's AdaptiveSizePolicy runs a feedback loop after each GC to resize eden and survivor toward throughput and pause-time goals. CORRECTED fields from source analysis: (1) minMutatorIntervalSec REMOVED — does not exist; MinGCDistanceSecond is a compile-time constant, not a stored instance field. (2) desiredEdenDelta CORRECTED — only logged on throughput-increase branch inside compute_desired_eden_size(), always positive (never negative), branch-conditional; renamed to throughputEdenIncrease and noted as branch-specific. (3) pauseMs renamed to minorPauseMs — source is minor_gc_time_estimate() only; major GC tracked separately and not in print_stats(). (4) mutatorIntervalSec/Last renamed to gcDistanceSec/Last — source variable is _gc_distance_seconds_seq ('gc-distance' in log). (5) throughputGoal: no stored field; re-derived as calculate_throughput_goal(GCTimeRatio) at emission time. (6) desiredEden/Survivor: not emittable from print_stats() — requires caller site in psYoungGen.cpp. (7) promotedBytesEstimate/Last are floating-point doubles in source, not integer bytes. Field notes: survivorOverflow is softer than PromotionFailed — some objects bypass survivor to old gen. shrinkBytes from compute_old_gen_shrink_bytes() uses 10-min promotion rate lookahead.",
+      "rationale": "Parallel GC's AdaptiveSizePolicy runs a feedback loop after each GC to resize eden and survivor. Field corrections: (1) minMutatorIntervalSec REMOVED — does not exist. (2) throughputEdenIncrease is branch-specific (throughput-increase path only, always positive). (3) pauseMs renamed to minorPauseMs (major GC not included). (4) mutatorIntervalSec/Last renamed to gcDistanceSec/Last (source: _gc_distance_seconds_seq). (5) throughputGoal: no stored field; re-derived from GCTimeRatio flag. (6) desiredEden/Survivor: must be captured at PSYoungGen call site. (7) promotedBytesEstimate/Last are floating-point doubles.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
-        { "type": "double", "name": "throughput", "label": "Measured Throughput (mutator_time_percent(); windowed estimate of mutator time fraction, not per-cycle; source: _gc_time_seq ring buffer)" },
-        { "type": "double", "name": "throughputGoal", "label": "Throughput Goal (re-derived: calculate_throughput_goal(GCTimeRatio) = 1-1/(1+GCTimeRatio); no stored field)" },
-        { "type": "double", "name": "minorPauseMs", "label": "Estimated Minor GC Pause (ms; minor_gc_time_estimate()*1000; adaptive average+stddev; major GC NOT included)" },
-        { "type": "double", "name": "pauseGoalMs", "label": "Pause Goal (ms; _gc_pause_goal_sec*1000; initialized from MaxGCPauseMillis/1000)" },
-        { "type": "double", "name": "gcDistanceSec", "label": "GC Distance Average (s; _gc_distance_seconds_seq.davg(); time between GC end and next GC start — 'gc-distance' in log)" },
-        { "type": "double", "name": "gcDistanceSecLast", "label": "GC Distance Last Sample (s; _gc_distance_seconds_seq.last(); raw most-recent value)" },
-        { "type": "double", "name": "promotedBytesEstimate", "label": "Promoted Bytes Estimate (double; _avg_promoted->padded_average(); smoothed+padded average used for sizing decisions)" },
-        { "type": "double", "name": "promotedBytesLast", "label": "Promoted Bytes Last GC (double; _promoted_bytes.last(); raw most-recent sample)" },
-        { "type": "double", "name": "promotionRateEstimate", "label": "Promotion Rate Estimate (bytes/s; _promotion_rate_bytes_per_sec.davg(); log shows M/s)" },
+        { "type": "double", "name": "throughput", "label": "Measured Throughput (mutator_time_percent(); windowed estimate)" },
+        { "type": "double", "name": "throughputGoal", "label": "Throughput Goal (re-derived: 1-1/(1+GCTimeRatio); no stored field)" },
+        { "type": "double", "name": "minorPauseMs", "label": "Estimated Minor GC Pause (ms; minor_gc_time_estimate()*1000; major GC NOT included)" },
+        { "type": "double", "name": "pauseGoalMs", "label": "Pause Goal (ms; _gc_pause_goal_sec*1000; from MaxGCPauseMillis)" },
+        { "type": "double", "name": "gcDistanceSec", "label": "GC Distance Average (s; _gc_distance_seconds_seq.davg(); 'gc-distance' in log)" },
+        { "type": "double", "name": "gcDistanceSecLast", "label": "GC Distance Last Sample (s; _gc_distance_seconds_seq.last())" },
+        { "type": "double", "name": "promotedBytesEstimate", "label": "Promoted Bytes Estimate (double; _avg_promoted->padded_average(); smoothed+padded)" },
+        { "type": "double", "name": "promotedBytesLast", "label": "Promoted Bytes Last GC (double; _promoted_bytes.last())" },
+        { "type": "double", "name": "promotionRateEstimate", "label": "Promotion Rate Estimate (bytes/s; _promotion_rate_bytes_per_sec.davg())" },
         { "type": "double", "name": "promotionRateLast", "label": "Promotion Rate Last GC (bytes/s; _promotion_rate_bytes_per_sec.last())" },
-        { "type": "boolean", "name": "survivorOverflow", "label": "Survivor Space Overflowed (some objects bypassed survivor to old gen; softer than PromotionFailed)" },
-        { "type": "long", "name": "desiredEden", "label": "Desired Eden Size (bytes; compute_desired_eden_size() return; must be captured at PSYoungGen call site)" },
-        { "type": "long", "name": "desiredSurvivor", "label": "Desired Survivor Size (bytes; compute_desired_survivor_size() return; must be captured at PSYoungGen call site)" },
-        { "type": "long", "name": "throughputEdenIncrease", "label": "Eden Increase for Throughput (bytes; only logged when throughput branch fires in compute_desired_eden_size(); null/0 on pause-reduction branch; was incorrectly named desiredEdenDelta)" },
+        { "type": "boolean", "name": "survivorOverflow", "label": "Survivor Space Overflowed (objects bypassed survivor to old gen; softer than PromotionFailed)" },
+        { "type": "long", "name": "desiredEden", "label": "Desired Eden Size (bytes; must be captured at PSYoungGen call site)" },
+        { "type": "long", "name": "desiredSurvivor", "label": "Desired Survivor Size (bytes; must be captured at PSYoungGen call site)" },
+        { "type": "long", "name": "throughputEdenIncrease", "label": "Eden Increase for Throughput (bytes; throughput-increase branch only; null/0 on pause-reduction branch)" },
         { "type": "long", "name": "oldGenFree", "label": "Old Gen Free Bytes (from compute_old_gen_shrink_bytes())" },
-        { "type": "long", "name": "minFreeBytes", "label": "Old Gen Minimum Free Threshold (bytes; from 10-min promotion rate lookahead in compute_old_gen_shrink_bytes())" },
-        { "type": "long", "name": "shrinkBytes", "label": "Old Gen Shrink Amount (bytes; 0 if no shrink; from compute_old_gen_shrink_bytes())" }
+        { "type": "long", "name": "minFreeBytes", "label": "Old Gen Minimum Free Threshold (bytes; from 10-min promotion rate lookahead)" },
+        { "type": "long", "name": "shrinkBytes", "label": "Old Gen Shrink Amount (bytes; 0 if no shrink)" }
       ],
       "replaces": [
         {
@@ -406,20 +499,21 @@
       "label": "Shenandoah Collection Decision",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
-      "rationale": "Shenandoah generational mode's regulator/control FSM decides each cycle what to collect. CORRECTED fields from source analysis: (1) immediateGarbagePercent REMOVED — does not exist in any source file; source uses immediate_garbage (bytes) and immediate_regions (count) in shenandoahOldHeuristics.cpp. (2) decision field: no enum/string constant; GCMode enum values are: none, concurrent_normal, stw_degenerated, stw_full, servicing_old, bootstrapping_old, stopped (shenandoahGenerationalControlThread.hpp). The decision must be synthesized from which regulator code path fired; use String type with documented values. (3) generation: C++ object pointer in source; must be mapped to String ('Young'/'Old'/'Global'). (4) oldEvacuationBudget: byte count (_old_evacuation_budget), confirmed as long type. (5) This event spans MULTIPLE code sites — no single function emits all fields simultaneously; JFR implementation requires instrumentation at 3+ call sites. (6) available and softMaxCapacity must be captured at heuristic evaluation time. High-value for generational Shenandoah production operators — understanding why global (expensive) vs young-only cycles are chosen is critical.",
+      "rationale": "Shenandoah generational mode's regulator/control FSM decides each cycle what to collect. Field corrections: (1) immediateGarbagePercent REMOVED — source uses immediate_garbage (bytes) + immediate_regions (count). (2) decision: synthesized from GCMode enum (none/concurrent_normal/stw_degenerated/stw_full/servicing_old/bootstrapping_old/stopped) + regulator path. (3) This event spans MULTIPLE code sites — no single function emits all fields. NOTE on zScore/marginOfError: shenandoahAdaptiveHeuristics.cpp has 'z-score=%.3f' and 'Margin of error now %.2f' logs (both log_debug(gc, ergo)), but these fire in record_success_concurrent() AFTER a GC completes — NOT at the should_start_gc() decision point. They belong to a separate post-cycle accounting path and should NOT be added to this decision event. marginOfError could be included as a 'current confidence interval width' since it directly affects the next decision.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
-        { "type": "String", "name": "decision", "label": "Decision type — synthesized from GCMode enum + regulator path: 'young','old','global','mixed','degenerated','full','interrupt_old_for_young','none'; verify against shenandoahGenerationalControlThread.hpp GCMode enum" },
+        { "type": "String", "name": "decision", "label": "Decision type — synthesized: 'young','old','global','mixed','degenerated','full','interrupt_old_for_young','none'; from GCMode enum in shenandoahGenerationalControlThread.hpp" },
         { "type": "String", "name": "generation", "label": "Generation ('Young'/'Old'/'Global' — mapped from C++ ShenandoahGeneration* pointer)" },
         { "type": "String", "name": "cause", "label": "GC Cause (shenandoah_concurrent_gc / metadata_GC_threshold / alloc_failure / etc.)" },
-        { "type": "long", "name": "available", "label": "Available Bytes at Decision Time (from adaptive heuristics trigger evaluation)" },
+        { "type": "long", "name": "available", "label": "Available Bytes at Decision Time" },
         { "type": "long", "name": "softMaxCapacity", "label": "Soft Max Capacity (bytes)" },
-        { "type": "long", "name": "immediateGarbage", "label": "Immediate Garbage Bytes (immediate_garbage from shenandoahOldHeuristics; replaces erroneous immediateGarbagePercent)" },
+        { "type": "double", "name": "marginOfError", "label": "Current Adaptive Heuristic Confidence Margin (_margin_of_error_sd; affects next should_start_gc(); log: 'Margin of error now %.2f' in shenandoahAdaptiveHeuristics.cpp)" },
+        { "type": "long", "name": "immediateGarbage", "label": "Immediate Garbage Bytes (immediate_garbage from shenandoahOldHeuristics)" },
         { "type": "int", "name": "immediateRegions", "label": "Immediate Garbage Region Count (immediate_regions from shenandoahOldHeuristics)" },
         { "type": "int", "name": "mixedCandidates", "label": "Old Region Mixed Collection Candidates (unprocessed_old_collection_candidates(); 0 unless mixed GC)" },
-        { "type": "int", "name": "mixedRegionsSelected", "label": "Old Regions Selected for Mixed GC (_included_old_regions from finalize_mixed_evacs(); 0 unless mixed GC)" },
+        { "type": "int", "name": "mixedRegionsSelected", "label": "Old Regions Selected for Mixed GC (_included_old_regions; 0 unless mixed GC)" },
         { "type": "long", "name": "oldEvacuationBudget", "label": "Old Generation Evacuation Budget (bytes; _old_evacuation_budget; 0 unless mixed GC)" },
-        { "type": "int", "name": "defragRegions", "label": "Defragmentation Regions (defrag_count from prepare_for_old_collections(); 0 unless mixed GC)" }
+        { "type": "int", "name": "defragRegions", "label": "Defragmentation Regions (defrag_count; 0 unless mixed GC)" }
       ],
       "replaces": [
         {
@@ -441,6 +535,11 @@
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
           "function": "void ShenandoahOldHeuristics::choose_collection_set_from_regiondata()",
           "logLine": "Old-gen is planning to %s its collection set from %u/%u candidate regions"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
+          "function": "void ShenandoahAdaptiveHeuristics::adjust_margin_of_error(double amount)",
+          "logLine": "Margin of error now %.2f"
         }
       ]
     }
