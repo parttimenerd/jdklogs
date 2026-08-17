@@ -316,7 +316,7 @@ ShenandoahMmuTask::task()   [PeriodicTask at GCPauseIntervalMillis ~200ms]
 |---|---|---|---|
 | `startTime` | Standard JFR | No | Timestamp of GC phase completion |
 | `gcId` | `_most_recent_gcid` — GC ID of the collection that updated the MMU tracker | No | Correlate with `jdk.GarbageCollection` |
-| `phase` | `"Concurrent Young GC"`, `"Concurrent Global GC"`, `"Concurrent Bootstrap GC"`, `"Mixed Concurrent GC"`, `"Full GC"`, `"Degenerated GC"` — synthesized from collection type | Yes (null for periodic path if added later) | Compare GCU% across phases: Full GC and degenerated GC typically have higher GCU% than concurrent |
+| `phase` | `"Concurrent Young GC"`, `"Concurrent Global GC"`, `"Concurrent Bootstrap GC"`, `"Mixed Concurrent GC"`, `"Full GC"`, `"Degenerated Young GC"`, `"Degenerated Global GC"`, `"Degenerated Bootstrap Old GC"` — exact strings from `update_utilization()` callers in [`shenandoahMmuTracker.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp) and [`shenandoahDegeneratedGC.cpp:61`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahDegeneratedGC.cpp#L61) | Yes (null for periodic path if added later) | Compare GCU% across phases: Full GC and degenerated GC typically have higher GCU% than concurrent |
 | `gcuPercent` | GC utilization 0–100 — fraction of elapsed wall-clock time spent doing GC work | No | **Primary metric**: high `gcuPercent` means GC is consuming a large fraction of CPU time. Compare against SLA: e.g., `gcuPercent > 20%` might violate a throughput target |
 | `muPercent` | Mutator utilization 0–100 — `100 - gcuPercent` approximately | No | **Complementary**: the fraction of wall-clock time mutators ran; `muPercent = 100 - gcuPercent` when tracking is exact |
 | `periodSeconds` | Measurement window duration in seconds — length of the phase or measurement window | No | Normalizes the GCU%: a 5% GCU over 100ms vs. 100ms is the same rate as 5% over 1s |
@@ -773,7 +773,7 @@ A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the t
 - Short-lived lambda-heavy applications generating many single-use compiled methods
 
 **Tuning actions**:
-- If `staleNMethodSlots` grows unbounded between rebuilds, check whether `jdk.NMethodSweep` events show adequate sweep frequency.
+- If `staleNMethodSlots` grows unbounded between rebuilds, check JIT compilation activity via `jdk.Compilation` and whether JVM TI agents or the code cache are evicting compiled methods at high rate.
 - High `registeredNMethods` (> 100K) in combination with long ZGC nmethod scanning phases → investigate code cache size and JIT tier thresholds.
 
 #### Open questions / upstream concerns
