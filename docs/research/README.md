@@ -31,7 +31,10 @@ Why native heap trimming matters for containerised JVMs (RSS bloat from glibc ma
 ### [ZGC Generational Mode](zgc-generational.md)
 How ZGC selects a tenuring threshold each young collection. Covers the three selection paths (Promote All / ZTenuringThreshold config / Computed), the `compute_tenuring_threshold()` algorithm (life decay factor × log residency, scaled by allocation pressure), why `jdk.ZUncommit` already exists (EventZUncommit::commit() fires in update_statistics()), and why only the info-level result fields belong in the proposed event. Supports `jdk.ZGCTenuringThreshold`.
 
-### [Shenandoah Heuristics & Collection Decision](shenandoah-heuristics.md)
+### [Event Consolidation & Emission-Point Analysis](event-consolidation.md)
+Where each proposed event fires (exact function, call chain, cadence, thread), analysis of which events to merge/split, and field-level trimming recommendations. Key findings: `G1ConcurrentRefinementSweep`+`Policy` stay separate (different cadences/threads); `ShenandoahCollectionDecision`+`ReclaimProgress` stay separate (start vs end of cycle); `ZDirectorRule` should be redesigned as a per-tick summary (22 mostly-null fields → 6-field event); `ZNMethodRegistration.tableRebuilt` dropped (no source); `PSAdaptiveSizePolicy` loses 3 fields; `G1CollectionSetCandidates.continueMixed` dropped (different call site). `ShenandoahMMU.report()` path confirmed `log_debug`. Full emission-point table with calling function, cadence, and thread for all 16 events.
+
+
 How Shenandoah generational mode decides when to start young and old collections. Covers the `log_trigger()` macro (resolves to `log_info(gc)` in production), the three adaptive heuristic trigger types (rate_average, rate_momentary, rate_accelerated), the three old heuristic triggers (expansion_failure, fragmentation, growth), the regulator FSM, and the `_margin_of_error_sd` field. Supports `jdk.ShenandoahCollectionDecision` trigger augmentation (critique pass 6).
 
 ## Event Status Summary (as of 2026-08-17, pass 7)
