@@ -1,5 +1,5 @@
 {
-  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 26 oracle (196 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 (196 events) added jdk.StringDeduplication + jdk.FinalFieldMutation vs JDK 25 (194 events). JDK 27-dev master adds jdk.ShenandoahPromotionInformation. JDK-8365306 (NativeHeapTrim JFR, PR #26756, closed 2025-12): PR was blocked on ProcessSize umbrella design — narrow trim-only re-proposal recommended. G1 now has UseGCOverheadLimit (JDK-8212084, merged JDK 26, PR #27950) but no JFR event. JEP 521 Generational Shenandoah became production-ready in JDK 25. None of the other proposed events have upstream work in progress as of 2026-08-17. Critique pass 4 applied 2026-08-17: confirmed 0 of 18 proposals are covered by JDK 26/27-dev; promoted G1CollectionSetCandidates and G1HeapResize. Critique pass 5 applied 2026-08-17 from LOCAL JDK SOURCE at /Users/i560383_1/code/experiments/jdk: (1) G1CollectionSet function names corrected (select_candidates_from_marking, select_candidates_from_retained); (2) G1HeapSizingPolicy function names corrected (young_collection_resize_amount, young_collection_shrink_amount); (3) ShenandoahCardStatistics log tag corrected to gc,remset (NOT gc) and confirmed log_info not log_debug; (4) ShenandoahCardStatistics #ifndef PRODUCT guard confirmed from source; (5) ShenandoahCollectionDecision replaces corrected: choose_collection_set_from_regiondata() has ShouldNotReachHere() body — replaced with actual log site in choose_collection_set_from_regiondata() caller; added Adaptive CSet Selection log; (6) ZDirectorRule: added Select Minor GC Workers log lines to replaces; (7) New high-value event candidate discovered: jdk.ShenandoahTenuringThreshold (shenandoahAgeCensus.cpp:258 log_info(gc,age)); (8) PSAdaptiveSizePolicy compute_tenuring_threshold() log confirmed as debug-level, already captured by existing jdk.TenuringDistribution event for Parallel GC. Critique pass 6 applied 2026-08-17: (1) ZGCTenuringThreshold: new event promoted — zGeneration.cpp:716 log_info(gc,reloc) 'Using tenuring threshold: %d (%s)' confirmed production code, no JFR coverage; reason field distinguishes 'Promote All'/'ZTenuringThreshold'(config)/'Computed'(dynamic algorithm); (2) ZUncommit: NOT a new proposal — jdk.ZUncommit already exists in JFR metadata (metadata.xml:1248), EventZUncommit::commit() already fires in zUncommitter.cpp update_statistics(); (3) ShenandoahCollectionDecision: added triggerType + three trigger-path numeric fields (anticipatedGcDurationMs/baselineConsumptionBytes for rate trigger; fragmentationDensityPct/fragmentedFreeBytes for fragmentation trigger; liveAtPrevMarkBytes/currentUsageBytes for growth trigger); all from log_trigger() which resolves to log_info(gc) in product code (confirmed shenandoahHeuristics.cpp:248-263); (4) ZGC compute_tenuring_threshold algorithm audited — uses young_life_decay_factor * young_log_residency (life expectancy + heap residency + allocation pressure); allocatedGarbageRatio/youngLogResidency/lifeDecayFactor fields added to ZGCTenuringThreshold event at debug-only level — NOT added to event (log_debug only).",
+  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 26 oracle (196 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 (196 events) added jdk.StringDeduplication + jdk.FinalFieldMutation vs JDK 25 (194 events). JDK 27-dev master adds jdk.ShenandoahPromotionInformation. JDK-8365306 (NativeHeapTrim JFR, PR #26756, closed 2025-12): PR was blocked on ProcessSize umbrella design — narrow trim-only re-proposal recommended. G1 now has UseGCOverheadLimit (JDK-8212084, merged JDK 26, PR #27950) but no JFR event. JEP 521 Generational Shenandoah became production-ready in JDK 25. None of the other proposed events have upstream work in progress as of 2026-08-17. Critique pass 4 applied 2026-08-17: confirmed 0 of 18 proposals are covered by JDK 26/27-dev; promoted G1CollectionSetCandidates and G1HeapResize. Critique pass 5 applied 2026-08-17 from LOCAL JDK SOURCE at /Users/i560383_1/code/experiments/jdk: (1) G1CollectionSet function names corrected (select_candidates_from_marking, select_candidates_from_retained); (2) G1HeapSizingPolicy function names corrected (young_collection_resize_amount, young_collection_shrink_amount); (3) ShenandoahCardStatistics log tag corrected to gc,remset (NOT gc) and confirmed log_info not log_debug; (4) ShenandoahCardStatistics #ifndef PRODUCT guard confirmed from source; (5) ShenandoahCollectionDecision replaces corrected: choose_collection_set_from_regiondata() has ShouldNotReachHere() body — replaced with actual log site in choose_collection_set_from_regiondata() caller; added Adaptive CSet Selection log; (6) ZDirectorRule: added Select Minor GC Workers log lines to replaces; (7) New high-value event candidate discovered: jdk.ShenandoahTenuringThreshold (shenandoahAgeCensus.cpp:258 log_info(gc,age)); (8) PSAdaptiveSizePolicy compute_tenuring_threshold() log confirmed as debug-level, already captured by existing jdk.TenuringDistribution event for Parallel GC. Critique pass 6 applied 2026-08-17: (1) ZGCTenuringThreshold: new event promoted — zGeneration.cpp:716 log_info(gc,reloc) 'Using tenuring threshold: %d (%s)' confirmed production code, no JFR coverage; reason field distinguishes 'Promote All'/'ZTenuringThreshold'(config)/'Computed'(dynamic algorithm); (2) ZUncommit: NOT a new proposal — jdk.ZUncommit already exists in JFR metadata (metadata.xml:1248), EventZUncommit::commit() already fires in zUncommitter.cpp update_statistics(); (3) ShenandoahCollectionDecision: added triggerType + three trigger-path numeric fields (anticipatedGcDurationMs/baselineConsumptionBytes for rate trigger; fragmentationDensityPct/fragmentedFreeBytes for fragmentation trigger; liveAtPrevMarkBytes/currentUsageBytes for growth trigger); all from log_trigger() which resolves to log_info(gc) in product code (confirmed shenandoahHeuristics.cpp:248-263); (4) ZGC compute_tenuring_threshold algorithm audited — uses young_life_decay_factor * young_log_residency (life expectancy + heap residency + allocation pressure); allocatedGarbageRatio/youngLogResidency/lifeDecayFactor fields added to ZGCTenuringThreshold event at debug-only level — NOT added to event (log_debug only). Critique pass 7 applied 2026-08-17 — LOG LEVEL AUDIT from local JDK source: CRITICAL: six proposed events cite log_debug (not log_info) code paths — their replaces entries were sourced from log sites below the =info threshold of the original scope. This does NOT invalidate them as JFR proposals (JFR events expose data that currently requires debug logging, making it available in production for the first time), but priorities are adjusted: (1) G1ConcurrentRefinementSweep: print_refinement_stats() is log_debug(gc,refine) — downgraded to medium; (2) G1ConcurrentRefinementPolicy: record_young_collection_end() refinement log + adjust_threads_wanted() are log_debug(gc,refine) and log_debug(gc,ergo,refine) — downgraded to medium; (3) G1CollectionSetCandidates: all select_candidates_from_marking/retained logs are log_debug(gc,ergo,cset) — downgraded to medium; (4) G1HeapResize: log_resize() is log_debug(gc,ergo,heap) — confirmed medium; (5) ZDirectorRule: ALL rule log sites are log_debug(gc,director) — downgraded to medium; (6) PSAdaptiveSizePolicy: ALL print_stats/compute_desired_eden_size logs are log_debug(gc,ergo) — downgraded to medium; (7) GCOverheadLimitExceeded: counter-update log is log_debug(gc); only the OOM-throw path ('GC Overhead Limit exceeded too often') is log_info(gc) — event redesigned to fire ONLY at the OOM throw point, single emit per OOM event; (8) NativeHeapTrim: RSS data is conditionally collected only when logging is enabled (logging_enabled check at trimNativeHeap.cpp:141 — JFR emission would need to always collect sc.before/after); (9) ShenandoahCollectionDecision: 'Heuristics request...accepted' logs in shenandoahRegulatorThread.cpp are log_debug(gc) NOT log_info — event re-scoped to the log_info(gc) sites in shenandoahGenerationalControlThread.cpp (Start GC cycle, Preempting old generation) and log_trigger() sites (already documented); jdk.ResidentSetSize already exists in JFR (confirmed JDK 27 master metadata) — NativeHeapTrim is complementary not redundant; FinalFieldMutation NOT found in JDK 27 master metadata (may be in different branch or not yet merged).",
   "generatedFor": "trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info",
   "proposed": [
     {
@@ -155,33 +155,25 @@
       "event": "jdk.GCOverheadLimitExceeded",
       "label": "GC Overhead Limit Exceeded",
       "priority": "high",
+      "logLevel": "mixed",
+      "logLevelNote": "REDESIGNED (pass 7): The per-GC counter update logs ('GC Overhead Limit: GC Time %f...') are log_debug(gc) — NOT in scope. Only the OOM-throw path ('GC Overhead Limit exceeded too often') is log_info(gc). Event redesigned to fire ONCE at the OOM throw point only, with accumulated context. The per-GC counter data (gcTimePercent, freeSpacePercent) must be captured in the JFR event at the OOM throw site (where the current values are accessible via _policy->analytics() / _size_policy) not from the debug log.",
       "category": ["Java Virtual Machine", "GC", "Detailed"],
-      "rationale": "Fires immediately before the JVM throws OutOfMemoryError: GC Overhead Limit exceeded. Now implemented in both G1 (JDK-8212084, merged JDK 26 PR #27950) and Parallel GC — but no JFR event was added. Parallel GC logs TWO separate free-space values (young + old gen); G1 logs one combined value. gcTimePercent: G1 uses long_term_gc_time_ratio()*100; Parallel uses 100-mutator_time_percent(). consecutiveViolations = _gc_overhead_counter (resets to zero on a clean GC; fires OOM at GCOverheadLimitThreshold=5). gcId is GCId::peek() — last completed GC id (approximate).",
+      "rationale": "Fires immediately before the JVM throws OutOfMemoryError: GC Overhead Limit exceeded. Now implemented in both G1 (JDK-8212084, merged JDK 26 PR #27950) and Parallel GC — but no JFR event was added. EVENT SCOPE (pass 7): fires ONLY at the OOM throw point (satisfy_failed_allocation paths where gc_overhead_limit_exceeded() returns true), NOT per-GC-cycle. At the throw site, all relevant context is still accessible: g1CollectedHeap.cpp:1110 log_info(gc)('GC Overhead Limit exceeded too often (%zu)') and parallelScavengeHeap.cpp:507 log_info(gc)('GC Overhead Limit exceeded too often (%zu)'). The per-GC diagnostic values (gcTimePercent, freeSpace) must be read from GC analytics at the throw site, not from the debug counter-update log. gcId is GCId::peek() — last completed GC id (approximate).",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "int", "name": "gcId", "label": "Last Completed GC Identifier (GCId::peek(); approximate)" },
         { "type": "String", "name": "collector", "label": "Collector (G1 or Parallel)" },
-        { "type": "double", "name": "gcTimePercent", "label": "GC Time Percent 0-100 (long-term windowed average; G1: long_term_gc_time_ratio*100; Parallel: 100-mutator_time_percent)" },
-        { "type": "double", "name": "freeSpacePercent", "label": "Heap Free Space Percent 0-100 (G1 combined; null for Parallel — use freeSpaceYoung/OldPercent instead)" },
-        { "type": "double", "name": "freeSpaceYoungPercent", "label": "Young Gen Free Space Percent 0-100 (Parallel only; null for G1)" },
-        { "type": "double", "name": "freeSpaceOldPercent", "label": "Old Gen Free Space Percent 0-100 (Parallel only; null for G1)" },
-        { "type": "long", "name": "consecutiveViolations", "label": "Consecutive Threshold Violations (_gc_overhead_counter; resets to 0 on clean GC; fires OOM at GCOverheadLimitThreshold=5)" }
+        { "type": "double", "name": "gcTimePercent", "label": "GC Time Percent at OOM throw 0-100 (G1: long_term_gc_time_ratio*100; Parallel: 100-mutator_time_percent — read at throw site)" },
+        { "type": "double", "name": "freeSpacePercent", "label": "Heap Free Space Percent at OOM throw (G1: combined free regions; null for Parallel — use freeSpaceYoung/OldPercent instead)" },
+        { "type": "double", "name": "freeSpaceYoungPercent", "label": "Young Gen Free Space Percent at OOM throw (Parallel only; null for G1)" },
+        { "type": "double", "name": "freeSpaceOldPercent", "label": "Old Gen Free Space Percent at OOM throw (Parallel only; null for G1)" },
+        { "type": "long", "name": "consecutiveViolations", "label": "Consecutive Violations at OOM throw (_gc_overhead_counter = GCOverheadLimitThreshold; always = 5 by default)" }
       ],
       "replaces": [
         {
           "file": "src/hotspot/share/gc/g1/g1CollectedHeap.cpp",
-          "function": "void G1CollectedHeap::update_gc_overhead_counter()",
-          "logLine": "GC Overhead Limit: GC Time %f Free Space %f Counter %zu"
-        },
-        {
-          "file": "src/hotspot/share/gc/g1/g1CollectedHeap.cpp",
           "function": "HeapWord* G1CollectedHeap::satisfy_failed_allocation(...)",
           "logLine": "GC Overhead Limit exceeded too often (%zu)."
-        },
-        {
-          "file": "src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp",
-          "function": "void ParallelScavengeHeap::check_gc_overhead_limit()",
-          "logLine": "GC Overhead Limit: GC Time %f Free Space Young %f Old %f Counter %zu"
         },
         {
           "file": "src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp",
@@ -194,8 +186,9 @@
       "event": "jdk.NativeHeapTrim",
       "label": "Native Heap Trim",
       "priority": "high",
+      "logLevel": "info",
       "category": ["Java Virtual Machine", "Runtime"],
-      "rationale": "The JVM periodically calls malloc_trim/madvise to return RSS to the OS (NativeHeapTrimmer thread, -XX:TrimNativeHeapInterval). Especially valuable on containerised deployments. JDK-8365306 (PR #26756) was closed 2025-12 — the NativeHeapTrim event itself was not objected to; a narrow trim-only re-proposal is recommended. deltaBytes is SIGNED: afterBytes - beforeBytes (negative = RSS reduced, positive = RSS grew). trimCount = _num_trims_performed (uint64_t, first = 1). detailsAvailable=false when /proc/self/status unavailable.",
+      "rationale": "The JVM periodically calls malloc_trim/madvise to return RSS to the OS (NativeHeapTrimmer thread, -XX:TrimNativeHeapInterval). Especially valuable on containerised deployments. JDK-8365306 (PR #26756) was closed 2025-12 — the NativeHeapTrim event itself was not objected to; a narrow trim-only re-proposal is recommended. deltaBytes is SIGNED: afterBytes - beforeBytes (negative = RSS reduced, positive = RSS grew). trimCount = _num_trims_performed (uint64_t, first = 1). detailsAvailable=false when /proc/self/status unavailable. IMPLEMENTATION CONSTRAINT (pass 7): RSS data (sc.before/sc.after) is collected at trimNativeHeap.cpp:141 ONLY when logging is enabled ('const bool logging_enabled = lt.is_enabled()'). A JFR event implementation must call os::trim_native_heap() with a non-null SizingCollection* unconditionally (decoupled from log level), or restructure the call. This is a minor code change but must be addressed in the upstream proposal. Note: jdk.ResidentSetSize already exists in JFR (confirmed in JDK 27 master) but tracks instantaneous RSS; NativeHeapTrim captures the DELTA from a deliberate trim operation — complementary, not redundant.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "duration", "label": "Duration" },
@@ -221,9 +214,11 @@
     {
       "event": "jdk.G1ConcurrentRefinementSweep",
       "label": "G1 Concurrent Refinement Sweep",
-      "priority": "high",
+      "priority": "medium",
+      "logLevel": "debug",
+      "logLevelNote": "print_refinement_stats() is log_debug(gc,refine) — requires -Xlog:gc+refine=debug in current code. JFR event would make this available in production for the first time.",
       "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
-      "rationale": "G1 concurrent refinement sweeps the dirty-card queue (DCQS) between pauses. Fires once per sweep (potentially multiple times per GC pause). Log format verified from source: print_refinement_stats() starts with 'Refinement took %.2fms'. The JDK 25 write barrier redesign (JEP 522) changed refinement behavior significantly — this event is needed to understand the new refinement dynamics. cardsNoCrossRegion (no_cross_region in source) = within-region references filtered early; high = good heap locality. All fields verified against actual g1ConcurrentRefine.cpp format string.",
+      "rationale": "G1 concurrent refinement sweeps the dirty-card queue (DCQS) between pauses. Fires once per sweep (potentially multiple times per GC pause). Log format verified from source: print_refinement_stats() starts with 'Refinement took %.2fms'. The JDK 25 write barrier redesign (JEP 522) changed refinement behavior significantly — this event is needed to understand the new refinement dynamics. cardsNoCrossRegion (no_cross_region in source) = within-region references filtered early; high = good heap locality. All fields verified against actual g1ConcurrentRefine.cpp format string. PRIORITY DOWNGRADED (pass 7): all log sites are log_debug(gc,refine).",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "long", "name": "duration", "label": "Duration" },
@@ -249,9 +244,11 @@
     {
       "event": "jdk.G1ConcurrentRefinementPolicy",
       "label": "G1 Concurrent Refinement Policy Update",
-      "priority": "high",
+      "priority": "medium",
+      "logLevel": "debug",
+      "logLevelNote": "record_young_collection_end() refinement log is log_debug(gc,ergo,refine); adjust_threads_wanted() is log_debug(gc,refine). JFR event would make this data available without debug logging.",
       "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
-      "rationale": "Fires once per young-GC pause. Aggregates three separate log statements: (1) g1Policy.cpp record_young_collection_end() — pendingCardsTarget, goalMs, pendingCards, exceededGoal; (2) g1ConcurrentRefine.cpp adjust_threads_wanted() — threadsWanted, pendingCardsFromGC, predictedPendingCards, timeUntilNextGC, rates. The pending card target and goal window are the primary levers for diagnosing whether adaptive refinement keeps up with write-barrier pressure.",
+      "rationale": "Fires once per young-GC pause. Aggregates three separate log statements: (1) g1Policy.cpp record_young_collection_end() — pendingCardsTarget, goalMs, pendingCards, exceededGoal; (2) g1ConcurrentRefine.cpp adjust_threads_wanted() — threadsWanted, pendingCardsFromGC, predictedPendingCards, timeUntilNextGC, rates. The pending card target and goal window are the primary levers for diagnosing whether adaptive refinement keeps up with write-barrier pressure. PRIORITY DOWNGRADED (pass 7): all log sites are log_debug(gc,refine) or log_debug(gc,ergo,refine).",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "int", "name": "threadsWanted", "label": "Refinement Threads Wanted (from adjust_threads_wanted())" },
@@ -281,9 +278,11 @@
     {
       "event": "jdk.G1CollectionSetCandidates",
       "label": "G1 Collection Set Candidates",
-      "priority": "high",
+      "priority": "medium",
+      "logLevel": "debug",
+      "logLevelNote": "All select_candidates_from_marking/retained log sites are log_debug(gc,ergo,cset). JFR event would expose G1 mixed-GC selection reasoning in production for the first time.",
       "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
-      "rationale": "G1's mixed-GC region selection reasoning is entirely invisible in JFR today. jdk.EvacuationInformation records the outcome (regions evacuated, bytes); this event records the DECISION: how many candidates were available, how many selected, whether time budget was exceeded, and why mixed GCs stopped. There are TWO separate candidate paths: (1) MARKING candidates — regions identified by concurrent marking as high-garbage; (2) RETAINED candidates — regions from previous cycles that were deferred. Both paths have equivalent log structures and should be covered by a single event with a candidateType discriminator. IMPORTANT corrections from source audit: (1) proposed 'predictedTimeExceeded' boolean does not exist as a variable — source has 'Added %u ... although the predicted time was too high' (count of over-budget regions added). (2) 'reason' enum is implementable but requires synthesizing from three distinct stop conditions. (3) 'groups' (card-set groups, not region count) is logged separately and adds context. (4) predicted initial/optional times and optional threshold are available from the Finish log. No existing event covers this; jdk.G1AdaptiveIHOP/jdk.G1BasicIHOP cover IHOP (marking trigger), not collection-set selection.",
+      "rationale": "G1's mixed-GC region selection reasoning is entirely invisible in JFR today. jdk.EvacuationInformation records the outcome (regions evacuated, bytes); this event records the DECISION: how many candidates were available, how many selected, whether time budget was exceeded, and why mixed GCs stopped. There are TWO separate candidate paths: (1) MARKING candidates — regions identified by concurrent marking as high-garbage; (2) RETAINED candidates — regions from previous cycles that were deferred. Both paths have equivalent log structures and should be covered by a single event with a candidateType discriminator. IMPORTANT corrections from source audit: (1) proposed 'predictedTimeExceeded' boolean does not exist as a variable — source has 'Added %u ... although the predicted time was too high' (count of over-budget regions added). (2) 'reason' enum is implementable but requires synthesizing from three distinct stop conditions. (3) 'groups' (card-set groups, not region count) is logged separately and adds context. (4) predicted initial/optional times and optional threshold are available from the Finish log. No existing event covers this; jdk.G1AdaptiveIHOP/jdk.G1BasicIHOP cover IHOP (marking trigger), not collection-set selection. PRIORITY DOWNGRADED (pass 7): all log sites are log_debug(gc,ergo,cset).",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "String", "name": "candidateType", "label": "Candidate Type ('Marking' or 'Retained' — two separate selection passes per mixed GC)" },
@@ -342,8 +341,10 @@
       "event": "jdk.G1HeapResize",
       "label": "G1 Heap Resize Decision",
       "priority": "medium",
+      "logLevel": "debug",
+      "logLevelNote": "log_resize() is log_debug(gc,ergo,heap) — requires -Xlog:gc+ergo+heap=debug. JFR event would expose heap resize drivers (CPU usage vs thresholds) in production for the first time.",
       "category": ["Java Virtual Machine", "GC", "Detailed", "G1"],
-      "rationale": "G1's adaptive heap resize (expand/shrink) is driven by CPU-usage feedback in g1HeapSizingPolicy.cpp. The size delta is computable from jdk.G1HeapSummary before/after, but the DRIVERS (short/long-term GC-CPU-usage %, thresholds, scale factor, which trigger fired) are in no existing event — these are the actual tuning signal for G1ExpandByPercent / GCTimeRatio. Not covered by jdk.G1AdaptiveIHOP (which covers old-gen occupancy threshold for marking, not heap capacity resize). Field corrections from source audit: (1) 'reason' DOES NOT EXIST as a source variable — the decision is driven by _gc_cpu_usage_deviation_counter reaching G1CPUUsageExpandThreshold or -G1CPUUsageShrinkThreshold. (2) freeRegions and regionsNeededForAlloc come from SHRINK LOG ONLY — null/0 for expansion. (3) scaleFactor is shrink-path-only. (4) 'Heap resize triggers' log is at TRACE level (not debug). (5) The expand log has lowerThreshold/upperThreshold/gcCpuUsageTarget — missing from original proposal. direction = expand (bool in source, tristate derivable from expand + resize_bytes==0).",
+      "rationale": "G1's adaptive heap resize (expand/shrink) is driven by CPU-usage feedback in g1HeapSizingPolicy.cpp. The size delta is computable from jdk.G1HeapSummary before/after, but the DRIVERS (short/long-term GC-CPU-usage %, thresholds, scale factor, which trigger fired) are in no existing event — these are the actual tuning signal for G1ExpandByPercent / GCTimeRatio. Not covered by jdk.G1AdaptiveIHOP (which covers old-gen occupancy threshold for marking, not heap capacity resize). Field corrections from source audit: (1) 'reason' DOES NOT EXIST as a source variable — the decision is driven by _gc_cpu_usage_deviation_counter reaching G1CPUUsageExpandThreshold or -G1CPUUsageShrinkThreshold. (2) freeRegions and regionsNeededForAlloc come from SHRINK LOG ONLY — null/0 for expansion. (3) scaleFactor is shrink-path-only. (4) 'Heap resize triggers' log is at TRACE level (not debug). (5) The expand log has lowerThreshold/upperThreshold/gcCpuUsageTarget — missing from original proposal. direction = expand (bool in source, tristate derivable from expand + resize_bytes==0). CONFIRMED medium (pass 7): log_debug(gc,ergo,heap) consistent with prior priority.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "double", "name": "shortTermGcCpuUsagePct", "label": "Short-Term GC CPU Usage % (short_term_gc_cpu_usage; driving input for resize decision)" },
@@ -374,9 +375,11 @@
     {
       "event": "jdk.ZDirectorRule",
       "label": "ZGC Director Rule Evaluation",
-      "priority": "high",
+      "priority": "medium",
+      "logLevel": "debug",
+      "logLevelNote": "ALL ZDirector rule log sites are log_debug(gc,director) — requires -Xlog:gc+director=debug. A JFR event would expose ZGC collection trigger reasoning in production for the first time.",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Z"],
-      "rationale": "ZGC's director evaluates rules to decide whether to trigger GC. IMPORTANT design notes: (1) Early-exit: make_minor/major_gc_decision return on first triggered rule — at most one Minor and one Major rule fires per cycle. (2) rule_minor_allocation_rate_static (UseDynamicNumberOfGCThreads=false) is a separate variant with NO gcCPUTime/gcWorkers/allocRateVariancePct. (3) Proactive rule has TWO mutually exclusive branches (enabled vs not-yet-enabled). (4) rule_major_allocation_rate is an ESCALATION rule from start_gc(), not make_major_gc_decision(). (5) Timer rule applies to both generations. (6) High Usage log has freePercent. Generation values 'Young'/'Old' align with JFR convention.",
+      "rationale": "ZGC's director evaluates rules to decide whether to trigger GC. IMPORTANT design notes: (1) Early-exit: make_minor/major_gc_decision return on first triggered rule — at most one Minor and one Major rule fires per cycle. (2) rule_minor_allocation_rate_static (UseDynamicNumberOfGCThreads=false) is a separate variant with NO gcCPUTime/gcWorkers/allocRateVariancePct. (3) Proactive rule has TWO mutually exclusive branches (enabled vs not-yet-enabled). (4) rule_major_allocation_rate is an ESCALATION rule from start_gc(), not make_major_gc_decision(). (5) Timer rule applies to both generations. (6) High Usage log has freePercent. Generation values 'Young'/'Old' align with JFR convention. PRIORITY DOWNGRADED (pass 7): ALL rule log sites confirmed log_debug(gc,director) — no log_info anywhere in zDirector.cpp.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "String", "name": "generation", "label": "Generation (Young/Old)" },
@@ -464,9 +467,11 @@
     {
       "event": "jdk.PSAdaptiveSizePolicy",
       "label": "Parallel GC Adaptive Size Policy",
-      "priority": "high",
+      "priority": "medium",
+      "logLevel": "debug",
+      "logLevelNote": "ALL PSAdaptiveSizePolicy log sites (print_stats, compute_desired_eden_size, compute_old_gen_shrink_bytes) and PSYoungGen 'Desired size' are log_debug(gc,ergo). JFR event would expose Parallel GC sizing feedback loop in production for the first time.",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Parallel"],
-      "rationale": "Parallel GC's AdaptiveSizePolicy runs a feedback loop after each GC to resize eden and survivor. Field corrections: (1) minMutatorIntervalSec REMOVED — does not exist. (2) throughputEdenIncrease is branch-specific (throughput-increase path only, always positive). (3) pauseMs renamed to minorPauseMs (major GC not included). (4) mutatorIntervalSec/Last renamed to gcDistanceSec/Last (source: _gc_distance_seconds_seq). (5) throughputGoal: no stored field; re-derived from GCTimeRatio flag. (6) desiredEden/Survivor: must be captured at PSYoungGen call site. (7) promotedBytesEstimate/Last are floating-point doubles.",
+      "rationale": "Parallel GC's AdaptiveSizePolicy runs a feedback loop after each GC to resize eden and survivor. Field corrections: (1) minMutatorIntervalSec REMOVED — does not exist. (2) throughputEdenIncrease is branch-specific (throughput-increase path only, always positive). (3) pauseMs renamed to minorPauseMs (major GC not included). (4) mutatorIntervalSec/Last renamed to gcDistanceSec/Last (source: _gc_distance_seconds_seq). (5) throughputGoal: no stored field; re-derived from GCTimeRatio flag. (6) desiredEden/Survivor: must be captured at PSYoungGen call site. (7) promotedBytesEstimate/Last are floating-point doubles. PRIORITY DOWNGRADED (pass 7): ALL log sites confirmed log_debug(gc,ergo) — print_stats(), compute_desired_eden_size(), compute_old_gen_shrink_bytes() all log_debug.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "double", "name": "throughput", "label": "Measured Throughput (mutator_time_percent(); windowed estimate)" },
@@ -514,8 +519,10 @@
       "event": "jdk.ShenandoahCollectionDecision",
       "label": "Shenandoah Collection Decision",
       "priority": "high",
+      "logLevel": "mixed",
+      "logLevelNote": "CRITICAL CORRECTION (pass 7): 'Heuristics request...accepted' logs in shenandoahRegulatorThread.cpp are log_debug(gc) NOT log_info. Event re-scoped: primary log_info(gc) anchor is shenandoahGenerationalControlThread.cpp:374 'Start GC cycle (%s)' + log_trigger() sites (which are log_info(gc) via shenandoahHeuristics.cpp:248). The regulator accepted/rejected logs are debug-tier.",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
-      "rationale": "Shenandoah generational mode's regulator/control FSM decides each cycle what to collect. Field corrections: (1) immediateGarbagePercent REMOVED — source uses immediate_garbage (bytes) + immediate_regions (count). (2) decision: synthesized from GCMode enum (none/concurrent_normal/stw_degenerated/stw_full/servicing_old/bootstrapping_old/stopped) + regulator path. (3) This event spans MULTIPLE code sites — no single function emits all fields. NOTE on zScore/marginOfError: shenandoahAdaptiveHeuristics.cpp has 'z-score=%.3f' and 'Margin of error now %.2f' logs (both log_debug(gc, ergo)), but these fire in record_success_concurrent() AFTER a GC completes — NOT at the should_start_gc() decision point. They belong to a separate post-cycle accounting path and should NOT be added to this decision event. marginOfError could be included as a 'current confidence interval width' since it directly affects the next decision. Trigger fields added (critique pass 6): log_trigger() resolves to log_info(gc) in product code (shenandoahHeuristics.cpp:248); three trigger paths have specific numeric fields: rate triggers (anticipatedGcDurationMs, baselineConsumptionBytes), fragmentation trigger (fragmentationDensityPct, fragmentedFreeBytes), growth trigger (liveAtPrevMarkBytes, currentUsageBytes). All nullable — only populated for the matching triggerType.",
+      "rationale": "Shenandoah generational mode's regulator/control FSM decides each cycle what to collect. Field corrections: (1) immediateGarbagePercent REMOVED — source uses immediate_garbage (bytes) + immediate_regions (count). (2) decision: synthesized from GCMode enum (none/concurrent_normal/stw_degenerated/stw_full/servicing_old/bootstrapping_old/stopped) + regulator path. (3) This event spans MULTIPLE code sites — no single function emits all fields. NOTE on zScore/marginOfError: shenandoahAdaptiveHeuristics.cpp has 'z-score=%.3f' and 'Margin of error now %.2f' logs (both log_debug(gc, ergo)), but these fire in record_success_concurrent() AFTER a GC completes — NOT at the should_start_gc() decision point. They belong to a separate post-cycle accounting path and should NOT be added to this decision event. marginOfError could be included as a 'current confidence interval width' since it directly affects the next decision. Trigger fields added (critique pass 6): log_trigger() resolves to log_info(gc) in product code (shenandoahHeuristics.cpp:248); three trigger paths have specific numeric fields: rate triggers (anticipatedGcDurationMs, baselineConsumptionBytes), fragmentation trigger (fragmentationDensityPct, fragmentedFreeBytes), growth trigger (liveAtPrevMarkBytes, currentUsageBytes). All nullable — only populated for the matching triggerType. LOG LEVEL NOTE (pass 7): primary log_info(gc) anchor is 'Start GC cycle' in shenandoahGenerationalControlThread.cpp:374 and all log_trigger() sites. The regulator thread 'Heuristics request for...accepted' logs are log_debug(gc) — these should NOT appear as primary replaces entries for an info-level JFR event.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "String", "name": "decision", "label": "Decision type — synthesized: 'young','old','global','mixed','degenerated','full','interrupt_old_for_young','none'; from GCMode enum in shenandoahGenerationalControlThread.hpp" },
@@ -542,17 +549,23 @@
         {
           "file": "src/hotspot/share/gc/shenandoah/shenandoahRegulatorThread.cpp",
           "function": "void ShenandoahRegulatorThread::regulate_young_and_old_cycles()",
-          "logLine": "Heuristics request for young collection accepted"
+          "logLine": "Heuristics request for young collection accepted",
+          "logLevel": "debug",
+          "logLevelNote": "log_debug(gc) — below =info threshold; JFR event exposes this for the first time in production"
         },
         {
           "file": "src/hotspot/share/gc/shenandoah/shenandoahRegulatorThread.cpp",
           "function": "void ShenandoahRegulatorThread::regulate_young_and_old_cycles()",
-          "logLine": "Heuristics request for old collection accepted"
+          "logLine": "Heuristics request for old collection accepted",
+          "logLevel": "debug",
+          "logLevelNote": "log_debug(gc) — below =info threshold; JFR event exposes this for the first time in production"
         },
         {
           "file": "src/hotspot/share/gc/shenandoah/shenandoahRegulatorThread.cpp",
           "function": "void ShenandoahRegulatorThread::regulate_young_and_old_cycles()",
-          "logLine": "Heuristics request to interrupt old for young collection accepted"
+          "logLine": "Heuristics request to interrupt old for young collection accepted",
+          "logLevel": "debug",
+          "logLevelNote": "log_debug(gc) — below =info threshold; JFR event exposes this for the first time in production"
         },
         {
           "file": "src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp",
@@ -562,7 +575,9 @@
         {
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
           "function": "bool ShenandoahOldHeuristics::add_old_regions_to_cset(ShenandoahCollectionSet* set) [called from choose_collection_set_from_regiondata() caller]",
-          "logLine": "Choose old regions for mixed collection: old evacuation budget: , candidates: %u"
+          "logLine": "Choose old regions for mixed collection: old evacuation budget: , candidates: %u",
+          "logLevel": "debug",
+          "logLevelNote": "log_debug(gc) — below =info threshold"
         },
         {
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
@@ -572,12 +587,16 @@
         {
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
           "function": "void ShenandoahAdaptiveHeuristics::choose_collection_set_from_regiondata(...)",
-          "logLine": "Adaptive CSet Selection. Target Free: , Actual Free: , Max Evacuation: , Min Garbage: "
+          "logLine": "Adaptive CSet Selection. Target Free: , Actual Free: , Max Evacuation: , Min Garbage: ",
+          "logLevel": "debug",
+          "logLevelNote": "log_debug(gc,ergo) — below =info threshold; marginOfError field value read from heuristic object state at trigger time (not from this log)"
         },
         {
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
           "function": "void ShenandoahAdaptiveHeuristics::adjust_margin_of_error(double amount)",
-          "logLine": "Margin of error now %.2f"
+          "logLine": "Margin of error now %.2f",
+          "logLevel": "debug",
+          "logLevelNote": "log_debug(gc,ergo) — _margin_of_error_sd is read from object state at trigger time, not from this log site"
         },
         {
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",

@@ -1,6 +1,34 @@
 # Proposed new JFR events for GC log coverage (G1, ZGC, Parallel, Shenandoah, Serial, shared)
 
-**Working analysis for upstreaming. Last critique: pass 6 (2026-08-17)**
+**Working analysis for upstreaming. Last critique: pass 7 (2026-08-17)**
+
+## Critique Pass 7 Verdicts (2026-08-17) — Log Level Audit
+
+All 16 proposed events audited against JDK source at `/experiments/jdk`. Key finding: 6 high-priority events target `log_debug` code paths (not `log_info`), requiring priority adjustments. JFR events targeting debug-tier code are still valid proposals — they expose data currently inaccessible in production without debug logging — but they should not be classified as high priority.
+
+| Event | Priority Change | Log Level | Action |
+|---|---|---|---|
+| `jdk.G1ConcurrentRefinementSweep` | high → **medium** | `log_debug(gc,refine)` | Priority adjusted; `logLevel`+`logLevelNote` fields added |
+| `jdk.G1ConcurrentRefinementPolicy` | high → **medium** | `log_debug(gc,refine)` | Priority adjusted; `logLevel`+`logLevelNote` fields added |
+| `jdk.G1CollectionSetCandidates` | high → **medium** | `log_debug(gc,ergo,cset)` | Priority adjusted; `logLevel`+`logLevelNote` fields added |
+| `jdk.G1HeapResize` | medium (unchanged) | `log_debug(gc,ergo,heap)` | Confirmed; `logLevel`+`logLevelNote` fields added |
+| `jdk.ZDirectorRule` | high → **medium** | `log_debug(gc,director)` | Priority adjusted; `logLevel`+`logLevelNote` fields added |
+| `jdk.PSAdaptiveSizePolicy` | high → **medium** | `log_debug(gc,ergo)` | Priority adjusted; `logLevel`+`logLevelNote` fields added |
+| `jdk.GCOverheadLimitExceeded` | high (unchanged) | mixed (`log_debug` counter update; `log_info` throw) | **REDESIGNED**: now fires only at OOM throw (the only `log_info` site); removed per-GC counter-update entries from replaces |
+| `jdk.NativeHeapTrim` | high (unchanged) | `log_info(trimnative)` | `logLevel` added; RSS conditional collection constraint documented |
+| `jdk.ShenandoahCollectionDecision` | high (unchanged) | mixed | `logLevel: mixed` + `logLevelNote` added; CRITICAL: regulator thread entries (`shenandoahRegulatorThread.cpp`) are `log_debug` — annotated; primary anchor is `shenandoahGenerationalControlThread.cpp:374 log_info(gc,ergo)` + `log_trigger()` sites |
+| All others (`jdk.ShenandoahMMU`, `jdk.ShenandoahReclaimProgress`, `jdk.ShenandoahTenuringThreshold`, `jdk.ZGCTenuringThreshold`, `jdk.ZNMethodRegistration`, `jdk.ShenandoahCardStatistics`, `jdk.StringDeduplicationStatistics`) | unchanged | — | No changes needed (already correctly assessed) |
+
+### OpenJDK upstream research (pass 7, 2026-08-17)
+
+Web research via background agent confirmed the following upstream activity:
+
+- **JDK-8365306 / PR #26756** (`NativeHeapTrim` JFR event by tstuefe): abandoned December 2025 due to inactivity. Design disagreement with reviewer egahlin (per-platform normalized events vs. grouped event). No re-proposal found. `jdk.NativeHeapTrim` remains a valid narrow proposal.
+- **PR #30638** ("Shenandoah: Emit AllocationRequiringGC jfr events", merged April 2026): fills a gap where Shenandoah didn't emit `jdk.AllocationRequiringGC` events. **Does NOT affect any of our 16 proposals** — `jdk.AllocationRequiringGC` already existed for G1.
+- **PR #28015** (`jdk.StringDeduplication`, merged November 2025): confirms `jdk.StringDeduplicationStatistics` in our proposals is **REDUNDANT** — event shipped in JDK 26. Status already `REDUNDANT` in the JSON; no change needed.
+- **G1 concurrent refinement, ZGC director, Parallel adaptive sizing JFR events**: no proposals found in the upstream tracker. All three gaps remain open.
+
+---
 
 ## Critique Pass 6 Verdicts (2026-08-17)
 

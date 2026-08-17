@@ -34,26 +34,26 @@ How ZGC selects a tenuring threshold each young collection. Covers the three sel
 ### [Shenandoah Heuristics & Collection Decision](shenandoah-heuristics.md)
 How Shenandoah generational mode decides when to start young and old collections. Covers the `log_trigger()` macro (resolves to `log_info(gc)` in production), the three adaptive heuristic trigger types (rate_average, rate_momentary, rate_accelerated), the three old heuristic triggers (expansion_failure, fragmentation, growth), the regulator FSM, and the `_margin_of_error_sd` field. Supports `jdk.ShenandoahCollectionDecision` trigger augmentation (critique pass 6).
 
-## Event Status Summary (as of 2026-08-17)
+## Event Status Summary (as of 2026-08-17, pass 7)
 
 | Event | Priority | Status |
 |---|---|---|
-| `jdk.NativeHeapTrim` | high | Upstream PR closed; narrow re-proposal recommended |
-| `jdk.GCOverheadLimitExceeded` | high | G1 support added JDK 26; no JFR event yet |
-| `jdk.G1ConcurrentRefinementSweep` | high | Zero coverage; strong production case |
-| `jdk.G1ConcurrentRefinementPolicy` | high | Zero coverage; per-pause policy counterpart |
-| `jdk.G1CollectionSetCandidates` | high | Zero coverage; two-path event (marking + retained) |
-| `jdk.ZDirectorRule` | high | Zero coverage; sparse-field design needs upstream discussion |
-| `jdk.PSAdaptiveSizePolicy` | high | Zero coverage |
-| `jdk.ShenandoahMMU` | high | Zero coverage; needs gcId for correlation |
-| `jdk.ShenandoahCollectionDecision` | high | Zero coverage; spans multiple code sites; trigger fields added (pass 6) |
-| `jdk.G1HeapResize` | medium | Zero coverage; shrink-path fields need label annotation |
-| `jdk.ShenandoahReclaimProgress` | medium | Zero coverage; nullable fields for early-exit paths |
-| `jdk.ShenandoahTenuringThreshold` | medium | Zero coverage; dynamic mortality-rate algorithm unique to Shenandoah gen mode |
-| `jdk.ZGCTenuringThreshold` | medium | Zero coverage; reason field distinguishes config vs computed path |
-| `jdk.ZNMethodRegistration` | low | Weak production motivation; tableRebuilt needs new instrumentation |
-| `jdk.StringDeduplicationStatistics` | low | **REDUNDANT** — jdk.StringDeduplication shipped in JDK 26 |
-| `jdk.ShenandoahCardStatistics` | **blocked** | **BLOCKED** — data source is `#ifndef PRODUCT` guarded in shenandoahCardStats.cpp; requires moving stats collection to product build first |
+| `jdk.NativeHeapTrim` | high | Upstream PR (JDK-8365306) closed Dec 2025; narrow re-proposal recommended; `log_info(trimnative)` ✓; RSS collection gated on logging enabled — JFR impl must decouple |
+| `jdk.GCOverheadLimitExceeded` | high | G1 support added JDK 26; no JFR event; **redesigned pass 7**: fires at OOM throw only (`log_info(gc)` in `satisfy_failed_allocation()`); counter-update path is `log_debug` |
+| `jdk.ShenandoahMMU` | high | Zero coverage; `log_info(gc,ergo)` in `shenandoahMmuTracker.cpp:107,134` ✓; needs gcId for correlation |
+| `jdk.ShenandoahCollectionDecision` | high | Zero coverage; primary anchor `log_info(gc,ergo)` at `shenandoahGenerationalControlThread.cpp:374`; trigger fields from `log_trigger()` (`log_info(gc)`); regulator thread entries in replaces annotated as `log_debug` |
+| `jdk.G1ConcurrentRefinementSweep` | **medium** (↓ from high) | Zero coverage; **`log_debug(gc,refine)`** — below =info threshold; strong production case but debug-tier data |
+| `jdk.G1ConcurrentRefinementPolicy` | **medium** (↓ from high) | Zero coverage; **`log_debug(gc,refine)`** — below =info threshold; per-pause policy counterpart |
+| `jdk.G1CollectionSetCandidates` | **medium** (↓ from high) | Zero coverage; **`log_debug(gc,ergo,cset)`** — ALL candidate selection logs are debug level |
+| `jdk.ZDirectorRule` | **medium** (↓ from high) | Zero coverage; **`log_debug(gc,director)`** — ALL zDirector.cpp rule logs are debug level; no `log_info` in entire file |
+| `jdk.PSAdaptiveSizePolicy` | **medium** (↓ from high) | Zero coverage; **`log_debug(gc,ergo)`** — ALL psAdaptiveSizePolicy.cpp + psYoungGen.cpp sites are debug level |
+| `jdk.G1HeapResize` | medium (unchanged) | Zero coverage; **`log_debug(gc,ergo,heap)`**; shrink-path fields need label annotation |
+| `jdk.ShenandoahReclaimProgress` | medium | Zero coverage; `log_info(gc,ergo)` in `shenandoahMetrics.cpp:47,58,69,81` ✓; nullable fields for early-exit paths |
+| `jdk.ShenandoahTenuringThreshold` | medium | Zero coverage; `log_info(gc,age)` in `shenandoahAgeCensus.cpp:258` ✓ |
+| `jdk.ZGCTenuringThreshold` | medium | Zero coverage; `log_info(gc,reloc)` in `zGeneration.cpp:716` ✓; reason field distinguishes Promote All/ZTenuringThreshold/Computed |
+| `jdk.ZNMethodRegistration` | low | Weak production motivation; `log_info(gc,nmethod)` in `zStat.cpp:1621` ✓; tableRebuilt needs new instrumentation |
+| `jdk.StringDeduplicationStatistics` | low | **REDUNDANT** — `jdk.StringDeduplication` shipped in JDK 26 (PR #28015, merged Nov 2025) |
+| `jdk.ShenandoahCardStatistics` | **blocked** | **BLOCKED** — data source is `#ifndef PRODUCT` guarded in `shenandoahCardStats.cpp`; requires moving stats collection to product build first |
 
 ## Critique History
 
@@ -61,3 +61,4 @@ How Shenandoah generational mode decides when to start young and old collections
 - **Critique pass 2** (2026-08-17): G1ConcurrentRefinement split into Sweep+Policy; PSAdaptiveSizePolicy averaged/last fields; GCOverheadLimitExceeded diagnostic fields; ZDirectorRule early-exit semantics; ShenandoahMMU priority elevated; ShenandoahReclaimProgress redesigned as flat event; ZNMethodRegistration tableRebuilt added; ShenandoahCardStatistics gated to cumulative-only
 - **Critique pass 5** (2026-08-17): Local JDK source audit at /experiments/jdk — function names corrected in G1CollectionSet and G1HeapSizingPolicy replaces entries; ShenandoahCardStatistics log tag corrected (gc,remset) and demoted to 'blocked' priority (#ifndef PRODUCT guard confirmed in source — data not available in production builds, requires prerequisite code change); ShenandoahCollectionDecision replaces corrected (choose_collection_set_from_regiondata() has ShouldNotReachHere() body — replaced with actual log sites); ZDirectorRule replaces expanded with worker selection logs; new event jdk.ShenandoahTenuringThreshold promoted (shenandoahAgeCensus.cpp:258 log_info confirmed in product code outside #ifndef guard); wrote shenandoah-tenuring-threshold.md research doc
 - **Critique pass 6** (2026-08-17): ZGC generational source audit — jdk.ZGCTenuringThreshold promoted (zGeneration.cpp:716 log_info(gc,reloc) confirmed production code, no JFR coverage; reason field distinguishes Promote All/ZTenuringThreshold/Computed paths); jdk.ZUncommit rejected as new proposal (already exists in metadata.xml:1248, EventZUncommit::commit() fires in update_statistics()); ShenandoahCollectionDecision augmented with triggerType + 6 nullable trigger-path fields from log_trigger() sites (confirmed log_info(gc) in shenandoahHeuristics.cpp:248); Shenandoah old heuristics triggers audited (expansion_failure/fragmentation/growth paths); wrote zgc-generational.md and shenandoah-heuristics.md research docs
+- **Critique pass 7** (2026-08-17): Systematic log level audit of all 16 proposed events against JDK source — 5 events downgraded from high to medium (G1ConcurrentRefinementSweep, G1ConcurrentRefinementPolicy, G1CollectionSetCandidates, ZDirectorRule, PSAdaptiveSizePolicy) because ALL their cited log sites are `log_debug`, not `log_info`; GCOverheadLimitExceeded redesigned to fire at OOM throw point only (counter-update path is `log_debug`); NativeHeapTrim RSS collection constraint documented (gated on `logging_enabled` — JFR impl must decouple); ShenandoahCollectionDecision regulator thread replaces entries annotated as `log_debug`; upstream research via background agent confirmed NativeHeapTrim PR closed (JDK-8365306), StringDeduplication shipped (PR #28015), AllocationRequiringGC merged for Shenandoah (PR #30638); all other proposed gaps remain open with no upstream proposals found
