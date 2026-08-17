@@ -228,7 +228,7 @@ Allocating application thread
 | Field | Source | G1 | Parallel | Nullable? |
 |---|---|---|---|---|
 | `startTime` | Standard JFR | Yes | Yes | No |
-| `gcId` | `GCId::peek()` — last completed GC id, approximate | Yes | Yes | No |
+| `gcId` | `GCId::peek() - 1` — last assigned GC id; `peek()` returns `_next_id` (the NEXT id to be assigned), so `peek()-1` gives the last completed GC id | Yes | Yes | Yes (undefined if no GC has run yet) |
 | `collector` | String literal: `"G1"` or `"Parallel"` | Yes | Yes | No |
 | `gcTimePercent` | G1: `_policy->analytics()->long_term_gc_time_ratio() * 100` ([`g1CollectedHeap.cpp:1002`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1002)); Parallel: `100 - _size_policy->mutator_time_percent() * 100` ([`parallelScavengeHeap.cpp:436`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L436)) | Yes | Yes | No |
 | `freeSpacePercent` | G1: `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())` ([`g1CollectedHeap.cpp:1003`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1003)) | Yes | No | Yes (null for Parallel) |
@@ -253,7 +253,7 @@ Allocating application thread
 #### Open questions / upstream concerns
 
 1. G1 and Parallel have different free-space field shapes. The nullable pattern is acceptable in JFR but upstream may want two separate events (`jdk.G1GCOverheadLimitExceeded`, `jdk.ParallelGCOverheadLimitExceeded`) to avoid the impedance mismatch. The trade-off: separate events are cleaner but require more boilerplate.
-2. `gcId` uses `GCId::peek()` which returns the last completed GC id, not the current allocation cycle. Is "approximate" acceptable in the field description, or should this be omitted?
+2. `gcId` should use `GCId::peek() - 1` (last assigned GC id). `GCId::peek()` returns `_next_id` (the id to be assigned to the NEXT GC), so the last completed GC id is `peek() - 1`. If `peek() == 0` (no GC has run), the field should be `undefined`. Alternatively, use `GCId::current_or_undefined()` if the throw-point happens to be on a GC thread, but at `satisfy_failed_allocation()` the thread is the allocating application thread, so `current()` would assert — `peek()-1` is the correct mechanism.
 3. `consecutiveViolations` is always equal to `GCOverheadLimitThreshold` at throw time (the counter must reach the threshold to throw). Is this field useful, or is it a constant disguised as a variable?
 4. Both GC implementations call `update_gc_overhead_counter()` (G1) / `check_gc_overhead_limit()` (Parallel) from `satisfy_failed_allocation()` and then check the result before throwing. The event must fire **after** the counter update and **before** returning null — i.e., at the `if (gc_overhead_limit_exceeded())` block at line 1109 / line 506 respectively. The `long_term_gc_time_ratio` and free-space values computed in the same update call are still in-scope locals at that point.
 
@@ -380,6 +380,13 @@ log_info(gc)("Trigger (Old): Expansion failure, current size: ...")
 **Old immediate garbage (log_info)**:  
 `ShenandoahOldHeuristics::prepare_for_old_collections()`  
 [`shenandoahOldHeuristics.cpp:569`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp#L569)  
+**Exact log messages** (lines 567–572):
+```
+log_info(gc, ergo)("Old-Gen Collectable Garbage: ... consolidated with free: ..., over %zu regions", ...)
+log_info(gc, ergo)("Old-Gen Immediate Garbage: ... over %zu regions", ...)
+log_info(gc, ergo)("Old regions selected for defragmentation: %zu", defrag_count)
+log_info(gc, ergo)("Old regions not selected: %zu", total_uncollected_old_regions)
+```
 Log tag: `log_info(gc,ergo)`.
 
 **Annotated log_debug entries (NOT primary anchors)**:  
@@ -945,9 +952,9 @@ G1 concurrent refinement control thread
 Complements `jdk.G1ConcurrentRefinementSweep`: where Sweep shows per-sweep throughput, Policy shows the adaptive thread-count decision. Together they answer: "Is G1 adjusting the right number of refinement threads, and is the pending-card target realistic for this workload?"
 
 **Key patterns**:
-- `threadsWanted` at maximum and `pendingCards > pendingCardsTarget` → more refinement capacity needed; consider `-XX:G1ConcurrentRefinementThreads`.
+- `threadsWanted` at maximum and `pendingCards > pendingCardsTarget` → more refinement capacity needed; consider `-XX:G1ConcRefinementThreads`.
 - `dirtiedCardRate >> predictedRefineRate × threadsWanted` → write rate exceeds refinement capacity; expect pause-time spikes from residual card processing.
-- `exceededGoal=true` frequently → refinement time window is too tight; increase `-XX:G1RefinementThresholdStep`.
+- `exceededGoal=true` frequently → refinement time window is too tight; check `-XX:G1RSetUpdatingPauseTimePercent` (controls what fraction of pause budget is allocated to processing pending cards, default 10%).
 
 #### Why existing events don't cover this
 
