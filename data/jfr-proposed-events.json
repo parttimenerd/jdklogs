@@ -1,5 +1,5 @@
 {
-  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 26 oracle (196 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 (196 events) added jdk.StringDeduplication + jdk.FinalFieldMutation vs JDK 25 (194 events). JDK 27-dev master adds jdk.ShenandoahPromotionInformation. JDK-8365306 (NativeHeapTrim JFR, PR #26756, closed 2025-12): PR was blocked on ProcessSize umbrella design — narrow trim-only re-proposal recommended. G1 now has UseGCOverheadLimit (JDK-8212084, merged JDK 26, PR #27950) but no JFR event. JEP 521 Generational Shenandoah became production-ready in JDK 25. None of the other proposed events have upstream work in progress as of 2026-08-17. Critique pass 4 applied 2026-08-17: confirmed 0 of 18 proposals are covered by JDK 26/27-dev; promoted G1CollectionSetCandidates and G1HeapResize. Critique pass 5 applied 2026-08-17 from LOCAL JDK SOURCE at /Users/i560383_1/code/experiments/jdk: (1) G1CollectionSet function names corrected (select_candidates_from_marking, select_candidates_from_retained); (2) G1HeapSizingPolicy function names corrected (young_collection_resize_amount, young_collection_shrink_amount); (3) ShenandoahCardStatistics log tag corrected to gc,remset (NOT gc) and confirmed log_info not log_debug; (4) ShenandoahCardStatistics #ifndef PRODUCT guard confirmed from source; (5) ShenandoahCollectionDecision replaces corrected: choose_collection_set_from_regiondata() has ShouldNotReachHere() body — replaced with actual log site in choose_collection_set_from_regiondata() caller; added Adaptive CSet Selection log; (6) ZDirectorRule: added Select Minor GC Workers log lines to replaces; (7) New high-value event candidate discovered: jdk.ShenandoahTenuringThreshold (shenandoahAgeCensus.cpp:258 log_info(gc,age)); (8) PSAdaptiveSizePolicy compute_tenuring_threshold() log confirmed as debug-level, already captured by existing jdk.TenuringDistribution event for Parallel GC.",
+  "note": "Proposed NEW JFR events derived from gap analysis of -Xlog log sites that no existing JFR event covers. These events DO NOT exist in the JDK 26 oracle (196 events); they are candidates for upstream proposal. Scope of this analysis: -Xlog:trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info (127 uncovered firing sites). Each 'replaces' entry cites the HotSpot source file + verbatim log format string the event would make recoverable via JFR. Field types follow the oracle convention (long for time/bytes/counters, int for ids, float/double for ratios, boolean/String). startTime/duration follow the standard JFR event contract. Status note (2026-08-17): JDK 26 (196 events) added jdk.StringDeduplication + jdk.FinalFieldMutation vs JDK 25 (194 events). JDK 27-dev master adds jdk.ShenandoahPromotionInformation. JDK-8365306 (NativeHeapTrim JFR, PR #26756, closed 2025-12): PR was blocked on ProcessSize umbrella design — narrow trim-only re-proposal recommended. G1 now has UseGCOverheadLimit (JDK-8212084, merged JDK 26, PR #27950) but no JFR event. JEP 521 Generational Shenandoah became production-ready in JDK 25. None of the other proposed events have upstream work in progress as of 2026-08-17. Critique pass 4 applied 2026-08-17: confirmed 0 of 18 proposals are covered by JDK 26/27-dev; promoted G1CollectionSetCandidates and G1HeapResize. Critique pass 5 applied 2026-08-17 from LOCAL JDK SOURCE at /Users/i560383_1/code/experiments/jdk: (1) G1CollectionSet function names corrected (select_candidates_from_marking, select_candidates_from_retained); (2) G1HeapSizingPolicy function names corrected (young_collection_resize_amount, young_collection_shrink_amount); (3) ShenandoahCardStatistics log tag corrected to gc,remset (NOT gc) and confirmed log_info not log_debug; (4) ShenandoahCardStatistics #ifndef PRODUCT guard confirmed from source; (5) ShenandoahCollectionDecision replaces corrected: choose_collection_set_from_regiondata() has ShouldNotReachHere() body — replaced with actual log site in choose_collection_set_from_regiondata() caller; added Adaptive CSet Selection log; (6) ZDirectorRule: added Select Minor GC Workers log lines to replaces; (7) New high-value event candidate discovered: jdk.ShenandoahTenuringThreshold (shenandoahAgeCensus.cpp:258 log_info(gc,age)); (8) PSAdaptiveSizePolicy compute_tenuring_threshold() log confirmed as debug-level, already captured by existing jdk.TenuringDistribution event for Parallel GC. Critique pass 6 applied 2026-08-17: (1) ZGCTenuringThreshold: new event promoted — zGeneration.cpp:716 log_info(gc,reloc) 'Using tenuring threshold: %d (%s)' confirmed production code, no JFR coverage; reason field distinguishes 'Promote All'/'ZTenuringThreshold'(config)/'Computed'(dynamic algorithm); (2) ZUncommit: NOT a new proposal — jdk.ZUncommit already exists in JFR metadata (metadata.xml:1248), EventZUncommit::commit() already fires in zUncommitter.cpp update_statistics(); (3) ShenandoahCollectionDecision: added triggerType + three trigger-path numeric fields (anticipatedGcDurationMs/baselineConsumptionBytes for rate trigger; fragmentationDensityPct/fragmentedFreeBytes for fragmentation trigger; liveAtPrevMarkBytes/currentUsageBytes for growth trigger); all from log_trigger() which resolves to log_info(gc) in product code (confirmed shenandoahHeuristics.cpp:248-263); (4) ZGC compute_tenuring_threshold algorithm audited — uses young_life_decay_factor * young_log_residency (life expectancy + heap residency + allocation pressure); allocatedGarbageRatio/youngLogResidency/lifeDecayFactor fields added to ZGCTenuringThreshold event at debug-only level — NOT added to event (log_debug only).",
   "generatedFor": "trimnative*,gc*,gc+region*,gc+ergo*,gc+humongous*,stringdedup*=info",
   "proposed": [
     {
@@ -515,7 +515,7 @@
       "label": "Shenandoah Collection Decision",
       "priority": "high",
       "category": ["Java Virtual Machine", "GC", "Detailed", "Shenandoah"],
-      "rationale": "Shenandoah generational mode's regulator/control FSM decides each cycle what to collect. Field corrections: (1) immediateGarbagePercent REMOVED — source uses immediate_garbage (bytes) + immediate_regions (count). (2) decision: synthesized from GCMode enum (none/concurrent_normal/stw_degenerated/stw_full/servicing_old/bootstrapping_old/stopped) + regulator path. (3) This event spans MULTIPLE code sites — no single function emits all fields. NOTE on zScore/marginOfError: shenandoahAdaptiveHeuristics.cpp has 'z-score=%.3f' and 'Margin of error now %.2f' logs (both log_debug(gc, ergo)), but these fire in record_success_concurrent() AFTER a GC completes — NOT at the should_start_gc() decision point. They belong to a separate post-cycle accounting path and should NOT be added to this decision event. marginOfError could be included as a 'current confidence interval width' since it directly affects the next decision.",
+      "rationale": "Shenandoah generational mode's regulator/control FSM decides each cycle what to collect. Field corrections: (1) immediateGarbagePercent REMOVED — source uses immediate_garbage (bytes) + immediate_regions (count). (2) decision: synthesized from GCMode enum (none/concurrent_normal/stw_degenerated/stw_full/servicing_old/bootstrapping_old/stopped) + regulator path. (3) This event spans MULTIPLE code sites — no single function emits all fields. NOTE on zScore/marginOfError: shenandoahAdaptiveHeuristics.cpp has 'z-score=%.3f' and 'Margin of error now %.2f' logs (both log_debug(gc, ergo)), but these fire in record_success_concurrent() AFTER a GC completes — NOT at the should_start_gc() decision point. They belong to a separate post-cycle accounting path and should NOT be added to this decision event. marginOfError could be included as a 'current confidence interval width' since it directly affects the next decision. Trigger fields added (critique pass 6): log_trigger() resolves to log_info(gc) in product code (shenandoahHeuristics.cpp:248); three trigger paths have specific numeric fields: rate triggers (anticipatedGcDurationMs, baselineConsumptionBytes), fragmentation trigger (fragmentationDensityPct, fragmentedFreeBytes), growth trigger (liveAtPrevMarkBytes, currentUsageBytes). All nullable — only populated for the matching triggerType.",
       "fields": [
         { "type": "long", "name": "startTime", "label": "Start Time" },
         { "type": "String", "name": "decision", "label": "Decision type — synthesized: 'young','old','global','mixed','degenerated','full','interrupt_old_for_young','none'; from GCMode enum in shenandoahGenerationalControlThread.hpp" },
@@ -529,7 +529,14 @@
         { "type": "int", "name": "mixedCandidates", "label": "Old Region Mixed Collection Candidates (unprocessed_old_collection_candidates(); 0 unless mixed GC)" },
         { "type": "int", "name": "mixedRegionsSelected", "label": "Old Regions Selected for Mixed GC (_included_old_regions; 0 unless mixed GC)" },
         { "type": "long", "name": "oldEvacuationBudget", "label": "Old Generation Evacuation Budget (bytes; _old_evacuation_budget; 0 unless mixed GC)" },
-        { "type": "int", "name": "defragRegions", "label": "Defragmentation Regions (defrag_count; 0 unless mixed GC)" }
+        { "type": "int", "name": "defragRegions", "label": "Defragmentation Regions (defrag_count; 0 unless mixed GC)" },
+        { "type": "String", "name": "triggerType", "label": "GC Trigger Category — 'rate_average'/'rate_momentary'/'rate_accelerated'/'fragmentation'/'growth'/'expansion_failure'/'min_free'/'learning'/'pending'/'other'; from _last_trigger enum + old heuristic flags; null for non-adaptive heuristics" },
+        { "type": "double", "name": "anticipatedGcDurationMs", "label": "Anticipated GC Duration at Trigger (ms; rate triggers only — from ShenandoahAnticipatedConsumption::duration_seconds()*1000)" },
+        { "type": "long", "name": "baselineConsumptionBytes", "label": "Baseline Consumption Bytes (rate_average trigger only — allocation rate × anticipated GC duration)" },
+        { "type": "double", "name": "fragmentationDensityPct", "label": "Fragmentation Density % at Trigger (fragmentation trigger only — density*100 from get_fragmentation_trigger_reason_for_log_message())" },
+        { "type": "long", "name": "fragmentedFreeBytes", "label": "Fragmented Free Bytes (fragmentation trigger only — used_regions_size - used)" },
+        { "type": "long", "name": "liveAtPrevMarkBytes", "label": "Live Bytes at Previous OLD Mark End (growth trigger only — get_live_bytes_at_last_mark())" },
+        { "type": "long", "name": "currentUsageBytes", "label": "Current Old Gen Usage (growth trigger only — used(); includes humongous waste)" }
       ],
       "replaces": [
         {
@@ -571,6 +578,56 @@
           "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
           "function": "void ShenandoahAdaptiveHeuristics::adjust_margin_of_error(double amount)",
           "logLine": "Margin of error now %.2f"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
+          "function": "bool ShenandoahAdaptiveHeuristics::trigger_average_allocation_rate(...)",
+          "logLine": "Trigger (Young): Anticipated GC duration (%.2f ms) is above the time for average allocation rate (/s) to deplete free headroom () (margin of error = %.2f)"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
+          "function": "bool ShenandoahAdaptiveHeuristics::trigger_accelerating_allocation_rate(...) — momentary branch",
+          "logLine": "Trigger (Young): Momentary spike consumption () exceeds free headroom () at current rate (/s) for anticipated GC duration (%.2f ms)"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp",
+          "function": "bool ShenandoahAdaptiveHeuristics::trigger_accelerating_allocation_rate(...) — accelerated branch",
+          "logLine": "Trigger (Young): Accelerated consumption () exceeds free headroom () at current rate (/s) with acceleration (/s/s) for anticipated GC duration (%.2f ms)"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
+          "function": "bool ShenandoahOldHeuristics::should_start_gc() — fragmentation branch",
+          "logLine": "Trigger (Old): Old has become fragmented: available bytes spread between range spanned from to (), density: %.1f%%"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
+          "function": "bool ShenandoahOldHeuristics::should_start_gc() — growth branch",
+          "logLine": "Trigger (Old): Old has overgrown, live at end of previous OLD marking: , current usage: , percent growth: %.1f%%"
+        },
+        {
+          "file": "src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp",
+          "function": "bool ShenandoahOldHeuristics::should_start_gc() — expansion failure branch",
+          "logLine": "Trigger (Old): Expansion failure, current size: which is %.1f%% of total heap size"
+        }
+      ]
+    },
+    {
+      "event": "jdk.ZGCTenuringThreshold",
+      "label": "ZGC Tenuring Threshold Selection",
+      "priority": "medium",
+      "category": ["Java Virtual Machine", "GC", "Detailed", "ZGC"],
+      "rationale": "ZGC generational mode computes a tenuring threshold each young collection via ZGenerationYoung::select_tenuring_threshold(). The function logs at log_info(gc, reloc) with 'Using tenuring threshold: %d (%s)' — production code, no JFR coverage. The reason field identifies three selection paths: 'Promote All' (forced, via promote_all flag), 'ZTenuringThreshold' (user-pinned via -XX:ZTenuringThreshold), or 'Computed' (dynamic algorithm using life decay factor × log residency). The computed algorithm in compute_tenuring_threshold() uses: young_life_decay_factor (reciprocal of average ratio between consecutive age cohorts — higher = more generational = promote later), allocated_garbage_ratio (allocation pressure — high = prefer promoting to help YC keep up), and young_log_residency (heap fraction occupied by young gen — small fraction = promote later). The computed value is clamped between 1 and min(last_populated_age+1, MaxTenuringThreshold). Note: the debug-level diagnostic fields (allocatedGarbageRatio, youngLogResidency, lifeDecayFactor logged at log_debug) are intentionally NOT included in this event — only the info-level result. ZUncommit already exists as jdk.ZUncommit (metadata.xml:1248, EventZUncommit::commit() in update_statistics()).",
+      "fields": [
+        { "type": "long", "name": "startTime", "label": "Start Time" },
+        { "type": "int", "name": "gcId", "label": "GC Identifier (correlates with jdk.GarbageCollection)" },
+        { "type": "int", "name": "tenuringThreshold", "label": "Selected Tenuring Threshold (_tenuring_threshold; objects older than this are promoted to old gen)" },
+        { "type": "String", "name": "reason", "label": "Selection Reason — 'Promote All' (forced promotion) | 'ZTenuringThreshold' (user-pinned via flag) | 'Computed' (dynamic algorithm)" }
+      ],
+      "replaces": [
+        {
+          "file": "src/hotspot/share/gc/z/zGeneration.cpp",
+          "function": "void ZGenerationYoung::select_tenuring_threshold(ZRelocationSetSelectorStats stats, bool promote_all)",
+          "logLine": "Using tenuring threshold: %d (%s)"
         }
       ]
     },

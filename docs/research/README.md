@@ -28,6 +28,12 @@ How G1 resizes the committed heap between GC pauses using a CPU-usage deviation 
 ### [Native Heap Trimming](native-heap-trim.md)
 Why native heap trimming matters for containerised JVMs (RSS bloat from glibc malloc arenas). Covers the `NativeHeapTrimmer` thread, trim operation mechanics, upstream PR history (JDK-8365306 closed), relationship to `jdk.ResidentSetSize`, and corrected `deltaBytes` sign semantics. Supports `jdk.NativeHeapTrim`.
 
+### [ZGC Generational Mode](zgc-generational.md)
+How ZGC selects a tenuring threshold each young collection. Covers the three selection paths (Promote All / ZTenuringThreshold config / Computed), the `compute_tenuring_threshold()` algorithm (life decay factor × log residency, scaled by allocation pressure), why `jdk.ZUncommit` already exists (EventZUncommit::commit() fires in update_statistics()), and why only the info-level result fields belong in the proposed event. Supports `jdk.ZGCTenuringThreshold`.
+
+### [Shenandoah Heuristics & Collection Decision](shenandoah-heuristics.md)
+How Shenandoah generational mode decides when to start young and old collections. Covers the `log_trigger()` macro (resolves to `log_info(gc)` in production), the three adaptive heuristic trigger types (rate_average, rate_momentary, rate_accelerated), the three old heuristic triggers (expansion_failure, fragmentation, growth), the regulator FSM, and the `_margin_of_error_sd` field. Supports `jdk.ShenandoahCollectionDecision` trigger augmentation (critique pass 6).
+
 ## Event Status Summary (as of 2026-08-17)
 
 | Event | Priority | Status |
@@ -40,10 +46,11 @@ Why native heap trimming matters for containerised JVMs (RSS bloat from glibc ma
 | `jdk.ZDirectorRule` | high | Zero coverage; sparse-field design needs upstream discussion |
 | `jdk.PSAdaptiveSizePolicy` | high | Zero coverage |
 | `jdk.ShenandoahMMU` | high | Zero coverage; needs gcId for correlation |
-| `jdk.ShenandoahCollectionDecision` | high | Zero coverage; spans multiple code sites |
+| `jdk.ShenandoahCollectionDecision` | high | Zero coverage; spans multiple code sites; trigger fields added (pass 6) |
 | `jdk.G1HeapResize` | medium | Zero coverage; shrink-path fields need label annotation |
 | `jdk.ShenandoahReclaimProgress` | medium | Zero coverage; nullable fields for early-exit paths |
 | `jdk.ShenandoahTenuringThreshold` | medium | Zero coverage; dynamic mortality-rate algorithm unique to Shenandoah gen mode |
+| `jdk.ZGCTenuringThreshold` | medium | Zero coverage; reason field distinguishes config vs computed path |
 | `jdk.ZNMethodRegistration` | low | Weak production motivation; tableRebuilt needs new instrumentation |
 | `jdk.StringDeduplicationStatistics` | low | **REDUNDANT** — jdk.StringDeduplication shipped in JDK 26 |
 | `jdk.ShenandoahCardStatistics` | **blocked** | **BLOCKED** — data source is `#ifndef PRODUCT` guarded in shenandoahCardStats.cpp; requires moving stats collection to product build first |
@@ -53,3 +60,4 @@ Why native heap trimming matters for containerised JVMs (RSS bloat from glibc ma
 - **Critique pass 1** (2026-08-17): Initial 5 events added (NativeHeapTrim, G1ConcurrentRefinement, ZDirectorRule, PSAdaptiveSizePolicy, ShenandoahCollectionDecision)
 - **Critique pass 2** (2026-08-17): G1ConcurrentRefinement split into Sweep+Policy; PSAdaptiveSizePolicy averaged/last fields; GCOverheadLimitExceeded diagnostic fields; ZDirectorRule early-exit semantics; ShenandoahMMU priority elevated; ShenandoahReclaimProgress redesigned as flat event; ZNMethodRegistration tableRebuilt added; ShenandoahCardStatistics gated to cumulative-only
 - **Critique pass 5** (2026-08-17): Local JDK source audit at /experiments/jdk — function names corrected in G1CollectionSet and G1HeapSizingPolicy replaces entries; ShenandoahCardStatistics log tag corrected (gc,remset) and demoted to 'blocked' priority (#ifndef PRODUCT guard confirmed in source — data not available in production builds, requires prerequisite code change); ShenandoahCollectionDecision replaces corrected (choose_collection_set_from_regiondata() has ShouldNotReachHere() body — replaced with actual log sites); ZDirectorRule replaces expanded with worker selection logs; new event jdk.ShenandoahTenuringThreshold promoted (shenandoahAgeCensus.cpp:258 log_info confirmed in product code outside #ifndef guard); wrote shenandoah-tenuring-threshold.md research doc
+- **Critique pass 6** (2026-08-17): ZGC generational source audit — jdk.ZGCTenuringThreshold promoted (zGeneration.cpp:716 log_info(gc,reloc) confirmed production code, no JFR coverage; reason field distinguishes Promote All/ZTenuringThreshold/Computed paths); jdk.ZUncommit rejected as new proposal (already exists in metadata.xml:1248, EventZUncommit::commit() fires in update_statistics()); ShenandoahCollectionDecision augmented with triggerType + 6 nullable trigger-path fields from log_trigger() sites (confirmed log_info(gc) in shenandoahHeuristics.cpp:248); Shenandoah old heuristics triggers audited (expansion_failure/fragmentation/growth paths); wrote zgc-generational.md and shenandoah-heuristics.md research docs

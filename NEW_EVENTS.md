@@ -1,6 +1,31 @@
 # Proposed new JFR events for GC log coverage (G1, ZGC, Parallel, Shenandoah, Serial, shared)
 
-**Working analysis for upstreaming. Last critique: pass 4 (2026-08-17)**
+**Working analysis for upstreaming. Last critique: pass 6 (2026-08-17)**
+
+## Critique Pass 6 Verdicts (2026-08-17)
+
+| Event | Verdict | Action |
+|---|---|---|
+| `jdk.ZGCTenuringThreshold` | **PROMOTED** | New event added to `jfr-proposed-events.json`; `zGeneration.cpp:716 log_info(gc,reloc)` confirmed production code, no JFR coverage |
+| `jdk.ZUncommit` | **REJECTED** (already exists) | `jdk.ZUncommit` is already in `metadata.xml:1248`; `EventZUncommit::commit()` fires in `update_statistics()`; no new event needed |
+| `jdk.ShenandoahCollectionDecision` trigger fields | **AUGMENTED** | Added `triggerType` + 6 nullable fields to existing proposed event; all from `log_trigger()` which is `log_info(gc)` in production |
+
+### ZGCTenuringThreshold details:
+- **Source:** `ZGenerationYoung::select_tenuring_threshold()` at `zGeneration.cpp:716`
+- **Log:** `log_info(gc, reloc)("Using tenuring threshold: %d (%s)", _tenuring_threshold, reason)`
+- **Reason values:** `"Promote All"` (forced) | `"ZTenuringThreshold"` (user-pinned flag) | `"Computed"` (dynamic algorithm)
+- **Algorithm (Computed path):** `young_life_decay_factor × young_log_residency`; clamped to `[1, min(last_populated_age+1, MaxTenuringThreshold)]`
+- **Debug-only inputs** (`log_debug`): `allocatedGarbageRatio`, `youngLogResidency`, `lifeDecayFactor` — NOT included in event (debug level)
+
+### ShenandoahCollectionDecision trigger augmentation:
+- **`log_trigger()` is `log_info(gc)`** in production — confirmed `shenandoahHeuristics.cpp:248`
+- **Young trigger fields:** `anticipatedGcDurationMs` + `baselineConsumptionBytes` (rate_average); `anticipatedGcDurationMs` only (rate_momentary/rate_accelerated)
+- **Old fragmentation trigger:** `fragmentationDensityPct` (density × 100) + `fragmentedFreeBytes`
+- **Old growth trigger:** `liveAtPrevMarkBytes` (baseline) + `currentUsageBytes`
+- **Old expansion failure trigger:** `currentUsageBytes` only
+- All trigger fields are **nullable** — only populated for the matching `triggerType`
+
+---
 
 ## Critique Pass 4 Verdicts (2026-08-17)
 
