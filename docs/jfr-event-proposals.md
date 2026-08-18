@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 30)
+**Last updated**: 2026-08-18 (pass 31)
 
 ---
 
@@ -159,17 +159,17 @@ A JFR event implementation **must not** gate data collection on whether `-Xlog:t
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `duration` | Standard JFR | No |
-| `trimCount` | `uint64_t _num_trims_performed` — cumulative since JVM start; first event = 1 | No |
-| `beforeBytes` | `sc.before` from `/proc/self/status VmRSS` | Yes — false on non-Linux or restricted containers |
-| `afterBytes` | `sc.after` | Yes — same condition |
-| `deltaBytes` | `afterBytes - beforeBytes` — SIGNED; negative value = memory returned to OS | Yes — same condition |
-| `detailsAvailable` | `false` on non-Linux or restricted containers | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Verify trim fires at expected interval (`TrimNativeHeapInterval`) |
+| `duration` | Standard JFR | No | Trim wall time; > 100ms suggests heavy arena fragmentation or slow OS munmap |
+| `trimCount` | `uint64_t _num_trims_performed` — cumulative since JVM start; first event = 1 | No | Monotonically increasing; gaps in a continuous recording indicate missed events (buffer overflow or JFR disabled) |
+| `beforeBytes` | `sc.before` from `/proc/self/status VmRSS` | Yes — null on non-Linux or restricted containers | Pre-trim RSS; compare to `afterBytes` to measure recovery |
+| `afterBytes` | `sc.after` | Yes — same condition | Post-trim RSS |
+| `deltaBytes` | `afterBytes - beforeBytes` — **SIGNED**; negative = memory returned to OS | Yes — same condition | **Primary metric**: large negative value (e.g. −100MB) = significant arena bloat was present; near-zero = either minimal bloat or platform doesn't support RSS recovery |
+| `detailsAvailable` | `sc.after != SIZE_MAX` — false on non-Linux or when `/proc/self/status` is inaccessible | No | When `false`, `beforeBytes`/`afterBytes`/`deltaBytes` are all null; trim ran but RSS data unavailable |
 
-The sign convention on `deltaBytes` is important: a successful trim returns a negative delta (afterBytes < beforeBytes). This is counterintuitive but matches the "after minus before" arithmetic. If upstream prefers an unsigned `freedBytes = max(0, beforeBytes - afterBytes)`, that is an equivalent design choice.
+The sign convention on `deltaBytes` is important: a successful trim returns a **negative** delta (afterBytes < beforeBytes = memory returned to OS). This is counterintuitive but matches the "after minus before" arithmetic. If upstream prefers an unsigned `freedBytes = max(0, beforeBytes - afterBytes)`, that is an equivalent design choice.
 
 #### What it is used for
 
@@ -291,16 +291,16 @@ The JFR event fires at the `log_info` site. To access `long_term_gc_time_ratio` 
 
 #### Fields
 
-| Field | Source | G1 | Parallel | Nullable? |
-|---|---|---|---|---|
-| `startTime` | Standard JFR | Yes | Yes | No |
-| `gcId` | `GCId::peek() - 1` — last assigned GC id; `peek()` returns `_next_id` (the NEXT id to be assigned), so `peek()-1` gives the last completed GC id | Yes | Yes | Yes (undefined if no GC has run yet) |
-| `collector` | String literal: `"G1"` or `"Parallel"` | Yes | Yes | No |
-| `gcTimePercent` | G1: `_policy->analytics()->long_term_gc_time_ratio() * 100` ([`g1CollectedHeap.cpp:1002`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1002)) — must be re-read via this accessor at line 1109, not taken from `update_gc_overhead_counter()` local; Parallel: `_size_policy->gc_time_percent() * 100` (= `(1 - mutator_time_percent()) * 100`) — `gc_time_percent()` returns a fraction 0..1 ([`adaptiveSizePolicy.hpp:151`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shared/adaptiveSizePolicy.hpp#L151)), member accessible at line 507 | Yes | Yes | No |
-| `freeSpacePercent` | G1: `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())` ([`g1CollectedHeap.cpp:1003`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1003)) | Yes | No | Yes (null for Parallel) |
-| `freeSpaceYoungPercent` | Parallel: `percent_of(_young_gen->free_in_bytes(), _young_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:437`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L437)) | No | Yes | Yes (null for G1) |
-| `freeSpaceOldPercent` | Parallel: `percent_of(_old_gen->free_in_bytes(), _old_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:438`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L438)) | No | Yes | Yes (null for G1) |
-| `consecutiveViolations` | `_gc_overhead_counter`; equals `GCOverheadLimitThreshold` (fixed at 5 — this is a `develop` flag, not configurable in production builds) at throw time — counter incremented in `update_gc_overhead_counter()` at each safepoint, checked via `gc_overhead_limit_exceeded()` | Yes | Yes | No |
+| Field | Source | G1 | Parallel | Nullable? | Tuning use |
+|---|---|---|---|---|---|
+| `startTime` | Standard JFR | Yes | Yes | No | Time of OOM decision |
+| `gcId` | `GCId::peek() - 1` — last assigned GC id; `peek()` returns `_next_id` (the NEXT id to be assigned), so `peek()-1` gives the last completed GC id | Yes | Yes | Yes (undefined if no GC has run yet) | Correlate with `jdk.GarbageCollection` to find the last GC before the throw |
+| `collector` | String literal: `"G1"` or `"Parallel"` | Yes | Yes | No | Identifies which GC made the decision |
+| `gcTimePercent` | G1: `_policy->analytics()->long_term_gc_time_ratio() * 100` ([`g1CollectedHeap.cpp:1002`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1002)) — must be re-read via this accessor at line 1109, not taken from `update_gc_overhead_counter()` local; Parallel: `_size_policy->gc_time_percent() * 100` (= `(1 - mutator_time_percent()) * 100`) — `gc_time_percent()` returns a fraction 0..1 ([`adaptiveSizePolicy.hpp:151`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shared/adaptiveSizePolicy.hpp#L151)), member accessible at line 507 | Yes | Yes | No | **Primary diagnostic**: must be ≥ `GCTimeLimit` (default 98%) for the throw to happen. If it equals 98%, GC time was the binding constraint. Compare against `freeSpacePercent` — if both are extreme, heap is truly exhausted |
+| `freeSpacePercent` | G1: `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())` ([`g1CollectedHeap.cpp:1003`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1003)) | Yes | No | Yes (null for Parallel) | G1 only: must be < `GCHeapFreeLimit` (default 2%). Near 0 = heap exhausted; above 2% would mean this condition was not the trigger (check `gcTimePercent`) |
+| `freeSpaceYoungPercent` | Parallel: `percent_of(_young_gen->free_in_bytes(), _young_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:437`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L437)) | No | Yes | Yes (null for G1) | Parallel only: free fraction in young gen at throw time |
+| `freeSpaceOldPercent` | Parallel: `percent_of(_old_gen->free_in_bytes(), _old_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:438`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L438)) | No | Yes | Yes (null for G1) | Parallel only: free fraction in old gen at throw time; near 0 = old gen exhausted |
+| `consecutiveViolations` | `_gc_overhead_counter`; equals `GCOverheadLimitThreshold` (fixed at 5 — this is a `develop` flag, not configurable in production builds) at throw time — counter incremented in `update_gc_overhead_counter()` at each safepoint, checked via `gc_overhead_limit_exceeded()` | Yes | Yes | No | Always 5 at throw time (fixed constant in production). The field is self-documenting: it shows how many consecutive GC cycles both conditions were simultaneously true before the OOM was thrown |
 
 #### Why existing events don't cover this
 
@@ -433,7 +433,7 @@ void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
 | `phase` | `"Concurrent Young GC"`, `"Concurrent Global GC"`, `"Concurrent Bootstrap GC"`, `"Mixed Concurrent GC"`, `"Full GC"`, `"Degenerated Young GC"`, `"Degenerated Global GC"`, `"Degenerated Bootstrap Old GC"` — exact strings from `update_utilization()` callers in [`shenandoahMmuTracker.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp) and [`shenandoahDegeneratedGC.cpp:61`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahDegeneratedGC.cpp#L61) | Yes (null for periodic path if added later) | Compare GCU% across phases: Full GC and degenerated GC typically have higher GCU% than concurrent |
 | `gcuPercent` | GC utilization 0–100 — fraction of elapsed wall-clock time spent doing GC work | No | **Primary metric**: high `gcuPercent` means GC is consuming a large fraction of CPU time. Compare against SLA: e.g., `gcuPercent > 20%` might violate a throughput target |
 | `muPercent` | Mutator utilization 0–100 — `_most_recent_mu * 100` from `update_utilization()`, independently measured from GC thread CPU time; **not** simply `100 - gcuPercent`. Both fractions are measured against `active_processors × gc_cycle_period` — on a 16-core machine running at 50% load, both GCU and MU can be < 50%. MU can briefly exceed 100% if CPU measurement windows are coarse | No | If `muPercent + gcuPercent < 100`, remaining CPU capacity is neither mutator nor GC work (I/O, sleep, other processes) |
-| `periodSeconds` | Measurement window duration in seconds — length of the phase or measurement window | No | Normalizes the GCU%: a 5% GCU over 100ms vs. 100ms is the same rate as 5% over 1s |
+| `periodSeconds` | Measurement window duration in seconds — wall-clock time of the GC phase or sampling interval | No | Context for interpreting `gcuPercent` and `muPercent`: a short phase (e.g. 50ms young GC) vs. a long phase (e.g. 2s global GC) produce comparable percentages; absolute CPU time = `gcuPercent × periodSeconds × active_processors / 100` |
 | `isPeriodicSample` | `true` when emitted from `report()` periodic path | No | Distinguishes end-of-cycle measurements (high accuracy) from periodic snapshots (interpolated); for initial proposal this is always `false` |
 
 #### What it is used for
@@ -531,10 +531,14 @@ Trigger fields from: regulator thread → heuristic should_start_gc() calls
 
 **Base fields** (always present):
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `decision` | `gc_mode_name(gc_mode())` from `ShenandoahGenerationalControlThread` at [`shenandoahGenerationalControlThread.cpp:765`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L765): `"idle"`, `"normal"` (concurrent normal), `"degenerated"` (STW degenerated), `"full"` (STW full), `"old"` (servicing old), `"bootstrap"` (bootstrapping old) | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Cycle start timestamp |
+| `decision` | `gc_mode_name(gc_mode())` from `ShenandoahGenerationalControlThread` at [`shenandoahGenerationalControlThread.cpp:765`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L765): `"idle"`, `"normal"` (concurrent normal), `"degenerated"` (STW degenerated), `"full"` (STW full), `"old"` (servicing old), `"bootstrap"` (bootstrapping old) | No | **GC type**: at the current `service_concurrent_normal_cycle()` emission point this is always `"normal"`. See open question 3 for expansion to other modes. |
+| `generation` | `"Young"` / `"Old"` / `"Global"` | No | Which generation is targeted — Young is the common path; Old means old-gen collection is running; Global is a full-heap concurrent GC |
+| `cause` | `shenandoah_concurrent_gc` / `metadata_GC_threshold` / `alloc_failure` / etc. | No | Why GC was requested — `alloc_failure` means allocation couldn't complete without GC (urgent) |
+| `available` | Available bytes at decision time | No | Heap headroom at cycle start; compare against `softMaxCapacity` to compute fill fraction |
+| `softMaxCapacity` | Soft max capacity in bytes (`-XX:SoftMaxHeapSize`) | No | Current effective heap ceiling; `1 - available/softMaxCapacity` = utilization at GC start |
 
 **Source** ([`shenandoahGenerationalControlThread.cpp:765-773`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L765)):
 ```cpp
@@ -548,34 +552,30 @@ const char* ShenandoahGenerationalControlThread::gc_mode_name(GCMode mode) {
   case stopped:           return "stopped";     // Control thread exiting
 }
 ```
-| `generation` | `"Young"` / `"Old"` / `"Global"` | No |
-| `cause` | `shenandoah_concurrent_gc` / `metadata_GC_threshold` / `alloc_failure` / etc. | No |
-| `available` | Available bytes at decision time | No |
-| `softMaxCapacity` | Soft max capacity in bytes | No |
 
 **Adaptive heuristic fields** (null for non-adaptive heuristics):
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `marginOfError` | `_margin_of_error_sd` from `ShenandoahAdaptiveHeuristics` | Yes |
-| `triggerType` | `"rate_average"` / `"rate_momentary"` / `"rate_accelerated"` / `"fragmentation"` / `"growth"` / `"expansion_failure"` / `"min_free"` / `"learning"` / `"pending"` / `"other"` | Yes |
-| `anticipatedGcDurationMs` | ms; rate triggers only | Yes |
-| `baselineConsumptionBytes` | rate_average trigger only | Yes |
-| `fragmentationDensityPct` | fragmentation trigger only | Yes |
-| `fragmentedFreeBytes` | fragmentation trigger only | Yes |
-| `liveAtPrevMarkBytes` | growth trigger only | Yes |
-| `currentUsageBytes` | growth trigger only | Yes |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `marginOfError` | `_margin_of_error_sd` from `ShenandoahAdaptiveHeuristics` | Yes | Confidence buffer in GC duration prediction; higher values = heuristic is less certain, so it triggers earlier. Increases after back-to-back degenerated GCs; decreases after smooth concurrent cycles. |
+| `triggerType` | `"rate_average"` / `"rate_momentary"` / `"rate_accelerated"` / `"fragmentation"` / `"growth"` / `"expansion_failure"` / `"min_free"` / `"learning"` / `"pending"` / `"other"` | Yes | **Core diagnostic**: which heuristic condition fired |
+| `anticipatedGcDurationMs` | ms; rate triggers only — `rate.duration_seconds() * 1000` | Yes | How long the heuristic predicted this GC will take. If increasing over time, GC is getting slower; combined with shrinking headroom, allocation stalls are approaching. |
+| `baselineConsumptionBytes` | `rate.baseline_consumption()` = baseline_rate × anticipated duration; rate_average trigger only | Yes | Expected bytes consumed at average allocation rate during the GC — the "budget" the heuristic is protecting against |
+| `fragmentationDensityPct` | Density = `used / used_regions_size`; fragmentation trigger only | Yes | Low density (< 50%) = live objects spread sparsely across many regions; increasing density over cycles = old gen is defragmenting via reclamation |
+| `fragmentedFreeBytes` | `used_regions_size - used` — fragmentation trigger only | Yes | How many bytes are "free" but trapped inside sparsely populated regions |
+| `liveAtPrevMarkBytes` | Live bytes at end of last old marking; growth trigger only | Yes | Baseline for growth calculation: `(currentUsageBytes - liveAtPrevMarkBytes) / liveAtPrevMarkBytes` = growth rate since last old marking |
+| `currentUsageBytes` | Current old gen usage; growth and expansion_failure triggers | Yes | Old gen fill level at trigger time |
 
 **Mixed GC fields** (null unless mixed GC):
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `immediateGarbage` | Immediate garbage bytes from `prepare_for_old_collections()` | Yes |
-| `immediateRegions` | Immediate garbage region count | Yes |
-| `mixedCandidates` | Old region mixed collection candidates | Yes |
-| `mixedRegionsSelected` | Old regions selected | Yes |
-| `oldEvacuationBudget` | Old gen evacuation budget in bytes | Yes |
-| `defragRegions` | Defragmentation region count | Yes |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `immediateGarbage` | Immediate garbage bytes from `prepare_for_old_collections()` | Yes | Regions with 100% garbage; collected free without evacuation cost |
+| `immediateRegions` | Immediate garbage region count | Yes | High count = efficient old-gen reclaim; low count = live objects are spread across most regions |
+| `mixedCandidates` | Old region mixed collection candidates | Yes | How many old-gen regions the policy identified as collection-worthy |
+| `mixedRegionsSelected` | Old regions selected | Yes | Compare to `mixedCandidates` — if selected << candidates, budget or region limits are binding |
+| `oldEvacuationBudget` | Old gen evacuation budget in bytes | Yes | How much space is reserved for old-gen object copies during mixed GC |
+| `defragRegions` | Defragmentation region count | Yes | Regions selected specifically to reduce old-gen fragmentation (low garbage density but high fragmentation cost) |
 
 #### Why existing events don't cover this
 
@@ -718,13 +718,13 @@ The `badProgressCount` is `ShenandoahCollectorPolicy::_consecutive_degenerated_g
 
 **Full version (12 fields — for reference, not for initial proposal)**:
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime`, `freePassed`, `goodProgress` | Always present | No |
-| `freeActual`, `freeNeeded` | Always present | No |
-| `usedFreed`, `usedNeededToFree`, `usedPassed` | Null if free check failed first | Yes |
-| `internalFragDeltaPct`, `internalFragThresholdPct`, `internalFragPassed` | Null if earlier dimension failed | Yes |
-| `externalFragDeltaPct`, `externalFragThresholdPct`, `externalFragPassed` | Null if earlier dimension failed | Yes |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime`, `freePassed`, `goodProgress` | Always present | No | Core outcome fields |
+| `freeActual`, `freeNeeded` | Always present | No | `freeActual < freeNeeded` = hard gate failed; `freeNeeded = softMaxCapacity * ShenandoahCriticalFreeThreshold / 100` |
+| `usedFreed`, `usedNeededToFree`, `usedPassed` | Null if free check failed first | Yes | Bytes reclaimed vs. 1-region threshold; low `usedFreed` = live set is dense, GC found little to collect |
+| `internalFragDeltaPct`, `internalFragThresholdPct`, `internalFragPassed` | Null if earlier dimension failed | Yes | Delta in internal fragmentation (holes inside regions); threshold = 1%. If consistently not passing, regions are fragmented but live objects keep them pinned. |
+| `externalFragDeltaPct`, `externalFragThresholdPct`, `externalFragPassed` | Null if earlier dimension failed | Yes | Delta in external fragmentation (ratio of small free chunks to total free); threshold = 1%. |
 
 #### What it is used for
 
@@ -767,7 +767,7 @@ This escalation counter (`badProgressCount`, threshold = `CONSECUTIVE_BAD_DEGEN_
 
 "What tenuring threshold did Shenandoah compute this cycle, and what are the min/max bounds in effect?"
 
-Shenandoah generational uses a mortality-rate-based algorithm ([JEP 521](https://openjdk.org/jeps/521), production-ready JDK 25) to compute the tenuring threshold each young collection: it analyzes survival ratios across age cohorts, computes a weighted reciprocal, and clamps to `[ShenandoahGenerationalMinTenuringAge, ShenandoahGenerationalMaxTenuringAge]`. No existing JFR event exposes this per-cycle computed value.
+Shenandoah generational uses a mortality-rate-based algorithm ([JEP 521](https://openjdk.org/jeps/521), production-ready JDK 25) to compute the tenuring threshold each young collection: it scans age cohorts from oldest to youngest, finds the oldest cohort with high mortality (`mortality_rate > MortalityRateThreshold`), and returns `that_age + 1` as the threshold — keeping that high-mortality cohort in young gen one more cycle before promotion. Result is clamped to `[ShenandoahGenerationalMinTenuringAge, ShenandoahGenerationalMaxTenuringAge]`. No existing JFR event exposes this per-cycle computed value.
 
 #### Emission point
 
@@ -837,7 +837,17 @@ Tenuring threshold controls when objects "graduate" from young to old generation
 - **Too-early promotion** (low threshold): young objects that are actually short-lived get promoted to old gen, growing the old gen unnecessarily and eventually triggering old-gen collections.
 - **Too-late promotion** (high threshold): long-lived objects stay in young gen longer, surviving multiple young collections and consuming young-gen space.
 
-Shenandoah computes this dynamically from mortality rates, so the threshold adapts to object lifetimes. Watching `tenuringThreshold` over time lets you verify the algorithm is stabilizing (steady state) vs. oscillating (possibly a bursty workload with varying object lifetimes). Consistently hitting `maxTenuringAge` suggests the app has very long-lived objects in young gen — consider raising `ShenandoahGenerationalMaxTenuringAge`.
+Shenandoah computes this dynamically from mortality rates, so the threshold adapts to object lifetimes automatically. This event lets you verify that the algorithm is working correctly for your workload.
+
+**Diagnostic patterns**:
+
+| Pattern | Meaning | Tuning action |
+|---|---|---|
+| `tenuringThreshold` stable at a mid-range value | Algorithm has converged; steady-state workload | No action; healthy |
+| `tenuringThreshold` oscillates between `minTenuringAge` and `maxTenuringAge` | Bursty allocation pattern — object lifetime varies cycle to cycle | Check for phase changes in application (e.g., batch bursts). Consider `ShenandoahGenerationalTenuringMortalityRateThreshold` |
+| `tenuringThreshold == minTenuringAge` every cycle | Clamp is binding; algorithm wants even more aggressive promotion | Lower `ShenandoahGenerationalMinTenuringAge` if old gen pressure is acceptable |
+| `tenuringThreshold == maxTenuringAge` every cycle | Algorithm found no high-mortality cohort; all ages have good survival rates | Objects are genuinely long-lived. If old gen grows, raise `ShenandoahGenerationalMaxTenuringAge` to keep them in young longer, or verify the workload does not have a promotion leak |
+| `tenuringThreshold` suddenly drops after being stable | New allocation pattern with shorter-lived objects; algorithm adapting | Expected during warm-up or after a workload phase change. Transient. |
 
 #### Why existing events don't cover this
 - `jdk.GarbageCollection`: records GC completion; no tenuring threshold field.
@@ -960,6 +970,16 @@ const uint tenuring_threshold = clamp((uint)round(tenuring_threshold_raw), lower
 - **Detect mode shifts**: `reason="Promote All"` is an emergency signal — ZGC decided to flush the young gen entirely because allocation pressure exceeded its model. This causes a spike in old-gen promotions.
 - **Validate flag overrides**: if `-XX:ZTenuringThreshold` is set but `reason` shows `"Computed"`, the flag value was out of range; if `reason="ZTenuringThreshold"` on every collection, the flag is locking the threshold and the dynamic algorithm is not running.
 
+**Diagnostic patterns by `reason`**:
+
+| `reason` | Interpretation | Tuning action |
+|---|---|---|
+| `"Computed"` (stable threshold) | Algorithm converged; workload has consistent generational behavior | No action; healthy |
+| `"Computed"` (oscillating threshold) | Object lifetime distribution varies cycle to cycle | Check for allocation bursts or phase changes in the application |
+| `"Computed"` (threshold consistently at 1) | Strong allocation pressure: high `allocatedGarbageRatio` is forcing a low log base, minimizing the threshold | Increase young-gen size if possible; `-XX:ZYoungGenerationSizePercent` |
+| `"ZTenuringThreshold"` | Admin override is active; dynamic algorithm disabled | Verify the static value is still appropriate for current workload. Remove the flag to re-enable dynamic adaptation. |
+| `"Promote All"` | Emergency: ZGC flushed all young objects to old gen due to allocation pressure | Heap is undersized for this workload. Increase `-Xmx` or verify `SoftMaxHeapSize`. Expect old-gen growth spike. |
+
 #### Why existing events don't cover this
 
 - `jdk.ZGCConfiguration`: records the static `-XX:ZTenuringThreshold` flag; not the per-cycle dynamic selection (which differs for `"Promote All"` and `"Computed"` paths).
@@ -1023,11 +1043,11 @@ Fires at end of every ZGC generation collection (both young and old).
 
 #### Fields
 
-| Field | Source | Nullable? |
-|---|---|---|
-| `startTime` | Standard JFR | No |
-| `registeredNMethods` | `_nregistered` — current live count from `ZNMethodTable` | No |
-| `staleNMethodSlots` | `_nunregistered` — zombie entries pending table rebuild; NOT cumulative | No |
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Correlate with `jdk.ZYoungGarbageCollection` or `jdk.ZOldGarbageCollection` |
+| `registeredNMethods` | `_nregistered` — current live count from `ZNMethodTable` | No | Size of the nmethod table ZGC must scan each cycle. High values (> 50K) increase per-collection scan overhead. Correlate with GC pause length. |
+| `staleNMethodSlots` | `_nunregistered` — zombie entries pending table rebuild; NOT cumulative; resets to 0 after each rebuild | No | **Staleness indicator**: high ratio of `staleNMethodSlots / registeredNMethods` (> 10%) means many table slots hold dead references that still consume scan time. A rebuild clears these — if stale count never decreases, the rebuild trigger is not firing. |
 
 **DROPPED field**: `tableRebuilt` — no per-cycle boolean exists in `ZStatNMethods::print()`. Adding this field would require new instrumentation in `ZNMethodTable` to record whether a rebuild occurred in the current cycle. That is a prerequisite change, not part of the base event.
 
@@ -1048,6 +1068,14 @@ A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the t
 **Tuning actions**:
 - If `staleNMethodSlots` grows unbounded between rebuilds, check JIT compilation activity via `jdk.Compilation` and whether JVM TI agents or the code cache are evicting compiled methods at high rate.
 - High `registeredNMethods` (> 100K) in combination with long ZGC nmethod scanning phases → investigate code cache size and JIT tier thresholds.
+
+#### External references
+
+[JEP 439: Generational ZGC](https://openjdk.org/jeps/439):
+
+> "ZGC must scan all registered nmethods during each GC cycle to locate object references in compiled code (oops in compiled frames). The cost of this scan grows with the size of the nmethod table."
+
+`jdk.CodeCacheStatistics` reports aggregate code cache occupancy but gives no signal about the ZGC-specific nmethod table (which is a separate data structure). There is no existing JFR event that exposes `ZNMethodTable::registered_nmethods()` or the stale-slot count.
 
 #### Open questions / upstream concerns
 
@@ -1376,11 +1404,20 @@ GC pause thread (during CSet finalization, before evacuation)
 
 Mixed GC is G1's mechanism for reclaiming old-gen space. If mixed GC is not selecting enough regions per pause, old-gen occupancy grows until Full GC is triggered. This event answers: "Is G1 selecting as many old-gen regions as it could, and what is stopping it from selecting more?"
 
-**Key patterns**:
-- `stopReason="Predicted time too high"` consistently → mixed GC is time-limited; increase `-XX:MaxGCPauseMillis` or reduce old-gen region garbage density.
-- `stopReason="Maximum number of regions reached"` consistently with `availableRegions >> selectedRegions` → `G1OldCSetRegionThresholdPercent` is the bottleneck; consider increasing it.
-- `overBudgetRegions > 0` frequently → the GC is forced to add over-budget regions to meet its minimum; pause times will exceed predictions. This often indicates old-gen backlog is accumulating — consider more frequent mixed GC via `G1MixedGCCountTarget`.
+**`stopReason` → tuning action mapping** (the most direct use of this event):
+
+| `stopReason` value | Meaning | Tuning action |
+|---|---|---|
+| `"Predicted time too high"` | Pause time budget exhausted before `maxRegions`; region was predicted to exceed remaining budget | Increase `-XX:MaxGCPauseMillis` (allows more old-gen work per pause), or reduce old-gen region liveness threshold via `-XX:G1MixedGCLiveThresholdPercent` (avoid dense regions) |
+| `"Maximum number of regions reached"` | Hard cap on old-gen regions per pause hit; `availableRegions` still > 0 | Increase `-XX:G1OldCSetRegionThresholdPercent` (default 10% of heap regions) to allow more regions per mixed pause |
+| `"Region amount reached min"` | `minRegions` met exactly; time budget was 0 but forced inclusion complete | Check `overBudgetRegions` > 0 — these forced additions will extend pause. Consider decreasing `-XX:G1MixedGCCountTarget` to spread work over more pauses |
+| `"Marking candidates exhausted"` | All marked old-gen candidates were consumed | Healthy state if occupancy trend is flat. If old gen still grows, marking is not completing fast enough — check IHOP threshold via `jdk.G1AdaptiveIHOP` |
+| `"Retained candidates exhausted"` | All retained (deferred optional) candidates consumed | Retained list is keeping up; no backlog |
+
+**Additional patterns**:
+- `overBudgetRegions > 0` frequently → the GC is forced to add over-budget regions to meet its minimum; pause times will exceed predictions. This often indicates old-gen backlog is accumulating — consider more frequent mixed GC via `-XX:G1MixedGCCountTarget`.
 - `Retained` type appearing → some regions were deferred from prior mixed pauses as optional. If `optionalRegions` from Marking is always 0 but Retained events appear, the GC may be struggling to clear its backlog in one pass.
+- `selectedRegions / availableRegions` ratio < 0.3 consistently → less than 30% of candidates are being collected per pass; old-gen reclamation is slow relative to its accumulation rate. Increase `MaxGCPauseMillis` or reduce `G1MixedGCLiveThresholdPercent`.
 
 #### Why existing events don't cover this
 
@@ -1506,9 +1543,9 @@ Fires at end of every young GC pause.
 | `shortTermGcCpuUsagePct` | `_analytics->short_term_gc_time_ratio() * 100` — primary driver for deviation counter; increments counter when above `upperThresholdPct`, decrements when below `lowerThresholdPct` | No | Compares against `upperThresholdPct` / `lowerThresholdPct` to determine resize direction; must exceed `G1CPUUsageExpandThreshold` (default 4) counts in a row to trigger expansion |
 | `longTermGcCpuUsagePct` | `_analytics->long_term_gc_time_ratio() * 100` — checked every `long_term_count_limit()` pauses | No | Slow trend; expansion triggers when this exceeds `upperThresholdPct` at the long-term check interval |
 | `deviationCounter` | `_gc_cpu_usage_deviation_counter` — positive → consecutive above-upper-threshold samples; negative → consecutive below-lower-threshold; reset to 0 after each resize | No | Threshold for expansion: counter **≥** `G1CPUUsageExpandThreshold` (default 4); threshold for shrink: counter **≤** `-G1CPUUsageShrinkThreshold` (default -8). Counter = 0 means heap is in tolerance band |
-| `lowerThresholdPct` | `gc_cpu_usage_target * (1 - G1CPUUsageDeviationPercent/100)` where `gc_cpu_usage_target = 1/(1+GCTimeRatio)` (scaled by heap fill ratio) | No | Below this → shrink candidate |
-| `upperThresholdPct` | `gc_cpu_usage_target * (1 + G1CPUUsageDeviationPercent/100)` | No | Above this → expand candidate |
-| `gcCpuUsageTargetPct` | `1.0 / (1.0 + GCTimeRatio)` × heap-scale factor; steady-state desired GC CPU fraction | No | The target the policy is aiming for. Derivable from `GCTimeRatio` but heap-scaling makes it non-trivial |
+| `lowerThresholdPct` | `gc_cpu_usage_target * (1 - G1CPUUsageDeviationPercent/100)` where `gc_cpu_usage_target = 1/(1+GCTimeRatio)` (scaled by heap fill ratio) | No | Below this → shrink candidate. Example: `GCTimeRatio=24` → target=4%; `G1CPUUsageDeviationPercent=25` → lower=3%. If GC CPU consistently stays below 3%, heap is oversized for this workload. |
+| `upperThresholdPct` | `gc_cpu_usage_target * (1 + G1CPUUsageDeviationPercent/100)` | No | Above this → expand candidate. Same example: upper=5%. If GC CPU exceeds 5% for 4+ consecutive pauses, G1 will try to grow the heap. |
+| `gcCpuUsageTargetPct` | `1.0 / (1.0 + GCTimeRatio)` × heap-scale factor; steady-state desired GC CPU fraction | No | The target the policy is aiming for. With `GCTimeRatio=24` (G1 default) this is 4% before heap scaling. `scale_with_heap()` reduces the target when committed heap ≤ half of max — meaning a small heap is allowed to run GC harder before expanding. |
 | `expand` | `true`=expand, `false`=shrink | Yes (null if `resizeBytes=0`) | Direction of resize |
 | `resizeBytes` | `young_collection_resize_amount()` return value; 0 = no resize triggered this pause | No | Size of resize in bytes; 0 on most pauses |
 | `atLimit` | Boolean: heap already at min/max capacity, so resize was requested but not possible | No | `true` + `expand=true` means heap needs to grow but `-Xmx` is the ceiling — increase max heap |
@@ -1800,11 +1837,11 @@ GC pause thread (within PSScavenge::invoke)
 | Field | Source | Nullable? | Tuning use |
 |---|---|---|---|
 | `startTime` | Standard JFR | No | Correlate with `jdk.GarbageCollection` |
-| `throughput` | `mutator_time_percent()` — `(total_time - gc_time) / total_time`, windowed average | No | **Primary goal metric**: below `1 - 1/(1+GCTimeRatio)` → algorithm will try to enlarge eden. Compare against `throughputGoal` implicit in `GCTimeRatio` |
-| `minorPauseMs` | `minor_gc_time_estimate() * 1000` — smoothed minor GC time, minor only, does NOT include major | No | **Pause goal input**: if this exceeds `pauseGoalMs` → algorithm enters pause-reduction branch and shrinks eden |
-| `pauseGoalMs` | `_gc_pause_goal_sec * 1000` from `MaxGCPauseMillis` (default is `max_uintx-1` = essentially unlimited unless set) | No | The target pause time; `minorPauseMs > pauseGoalMs` drives eden shrink |
-| `gcDistanceSec` | `_gc_distance_seconds_seq.davg()` — smoothed average inter-GC interval | No | **Frequency indicator**: short distance = high GC frequency. `gcDistanceSec / minorPauseMs` ≈ throughput fraction |
-| `gcDistanceSecLast` | `_gc_distance_seconds_seq.last()` — raw last sample | No | Compare against `gcDistanceSec` to detect recent frequency change |
+| `throughput` | `mutator_time_percent()` — `(total_time - gc_time) / total_time`, windowed average | No | **Primary goal metric**: the fraction of time NOT spent in GC. Goal = `1 - 1/(1+GCTimeRatio)`. With `GCTimeRatio=4` (Parallel default when `-XX:MaxGCPauseMillis` is unset), goal = 80% mutator time. If `throughput < goal`, Branch 1 fires and eden grows. |
+| `minorPauseMs` | `minor_gc_time_estimate() * 1000` — smoothed minor GC time; minor only, does NOT include major pauses | No | **Pause goal input**: if this exceeds `pauseGoalMs` → algorithm enters pause-reduction branch and shrinks eden. Note: `pauseGoalMs` is essentially unlimited by default in Parallel GC — set `-XX:MaxGCPauseMillis` to activate pause control. |
+| `pauseGoalMs` | `_gc_pause_goal_sec * 1000` from `MaxGCPauseMillis` (default `max_uintx-1` ≈ unlimited) | No | Active only when `-XX:MaxGCPauseMillis=N` is set. When set, pause control takes priority over throughput goal (pause > throughput in the oracle priority order). |
+| `gcDistanceSec` | `_gc_distance_seconds_seq.davg()` — exponentially-weighted average of inter-GC wall-clock intervals | No | **GC frequency indicator**: how far apart young GCs are, on average. Short distance (e.g. < 0.3s) = very frequent GC; heap may be too small or allocation rate too high. Policy uses this to keep GC neither too rare nor too frequent. |
+| `gcDistanceSecLast` | `_gc_distance_seconds_seq.last()` — raw last inter-GC interval (no smoothing) | No | Spike detection: sudden drop vs `gcDistanceSec` means a single very fast GC. Sustained difference means workload changed. |
 | `promotedBytesEstimate` | `promoted_bytes_estimate()` = `_promoted_bytes.davg() + _promoted_bytes.dsd()` — weighted average plus standard deviation of promoted bytes; this is the base class `AdaptiveSizePolicy::promoted_bytes_estimate()` at [`adaptiveSizePolicy.hpp:203`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shared/adaptiveSizePolicy.hpp#L203) | No | **Old-gen pressure predictor**: high value means objects are flowing to old gen; if sustained, old-gen collections become frequent |
 | `promotedBytesLast` | `_promoted_bytes.last()` — actual bytes promoted last cycle | No | Compare against `promotedBytesEstimate`: a spike relative to estimate means a burst of promotions; smoothed value will lag |
 | `survivorOverflow` | Boolean: survivor space was full, forcing premature promotion to old gen | No | `true` → objects that are still young were forced into old gen. Indicates survivor too small; increase `SurvivorRatio` or reduce `MaxTenuringThreshold` |
