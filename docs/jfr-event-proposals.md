@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18
+**Last updated**: 2026-08-18 (pass 30)
 
 ---
 
@@ -188,9 +188,17 @@ Containerized JVMs running glibc suffer from a well-known RSS bloat problem: mal
 - `jdk.ResidentSetSize`: tracks instantaneous RSS, not trim deltas. Cannot distinguish a trim recovery from normal allocation fluctuation.
 - No other JFR event mentions `trimnative`, `NativeHeapTrimmer`, or `os::trim_native_heap`.
 
-#### Upstream history
+#### External references
 
-JDK-8365306 / [PR #26756](https://github.com/openjdk/jdk/pull/26756) — opened by Thomas Stuefe, closed December 2025 due to inactivity. The closure was preceded by a design disagreement with egahlin, who wanted per-platform normalized size events rather than a grouped ProcessSize umbrella event. The `NativeHeapTrim` event **specifically was not objected to** — only the broader `ProcessSize` umbrella was contentious. A narrow trim-only re-proposal avoids the contested scope.
+[PR #26756](https://github.com/openjdk/jdk/pull/26756) (JDK-8365306) — NativeHeapTrim JFR event, opened by Thomas Stuefe, closed December 2025. From the PR design discussion:
+
+> "NativeHeapTrim Event (event-driven): RSS before/after measurements, Memory recovered, Automatic vs. manual trim distinction"
+
+The PR was closed due to inactivity following a design disagreement about a broader `ProcessSize` umbrella event. The `NativeHeapTrim` event specifically was **not objected to** — only the `ProcessSize` umbrella was contested. A narrow trim-only re-proposal avoids the contested scope entirely.
+
+Container environments running glibc suffer from well-documented RSS bloat (see Thomas Stuefe's work on `os::trim_native_heap` and the Red Hat container JVM investigations). `-XX:TrimNativeHeapInterval` was introduced specifically to address this; `jdk.NativeHeapTrim` closes the JFR observability gap for it.
+
+`jdk.ResidentSetSize` (JDK 27) is a complementary event — it answers "what is RSS right now" but cannot attribute changes to deliberate trims vs. allocation fluctuation. The two events are orthogonal.
 
 #### Open questions / upstream concerns
 
@@ -307,6 +315,18 @@ The JFR event fires at the `log_info` site. To access `long_term_gc_time_ratio` 
 - Was the threshold correctly calibrated? `gcTimePercent` shows the actual GC time fraction at the moment of throw. If it equals exactly `GCTimeLimit` (default 98%), the threshold was met as expected. If it seems lower, check whether `consecutiveViolations` (always at `GCOverheadLimitThreshold`) was the binding constraint.
 - What was the heap free-space ratio? Low `freeSpacePercent` confirms heap exhaustion; high `freeSpacePercent` with high `gcTimePercent` indicates GC is running but not reclaiming (live set too large, not heap exhaustion).
 - **Tuning**: if `gcTimePercent` is high but `freeSpacePercent` is also reasonable, the heap may be correctly sized but the workload has a large live set that GC cannot shrink. Increase `-Xmx` or reduce the live set. If `freeSpacePercent` is also near 0, the application is genuinely out of memory.
+
+#### External references
+
+[JDK-8212084](https://bugs.openjdk.org/browse/JDK-8212084) — "Add GCOverheadLimit check to G1GC": the JBS issue tracking G1 support for the overhead limit check.
+
+[PR #27950](https://github.com/openjdk/jdk/pull/27950) — G1 GCOverheadLimitExceeded implementation, merged JDK 26. From the PR description:
+
+> "The feature operates by: Detection Point: Checking overhead metrics at the conclusion of initial garbage collection phases... Triggering Condition: Returning null prematurely when both GC CPU usage and heap usage thresholds are exceeded for a sustained sequence of collections"
+
+Oracle JDK 26 documentation on `GCOverheadLimit`:
+
+> The default `GCTimeLimit=98` means the JVM throws `OutOfMemoryError` if more than 98% of time is spent in GC with less than `GCHeapFreeLimit=2%` heap freed. Without a JFR event, operators can only discover this threshold was hit from the OOM itself — the GC time percent and free-space state at the moment of the decision are lost unless heap dumps and logs were pre-configured.
 
 #### Open questions / upstream concerns
 
@@ -431,6 +451,14 @@ void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
 - `jdk.G1MMU`: measures pause compliance in a fixed window (ms units, G1-specific). Structurally different from Shenandoah's GCU%/MU% fraction.
 - `jdk.GarbageCollection`, `jdk.ShenandoahHeapRegionStateChange`: record GC outcomes and region states; do not capture time-fraction breakdown between GC and mutator.
 - No Shenandoah-specific JFR event captures the MMU tracker data.
+
+#### External references
+
+[JEP 521: Generational Shenandoah](https://openjdk.org/jeps/521) (production-ready JDK 25):
+
+> "The generational mode introduces a GC utilization (GCU%) metric: the fraction of wall-clock time spent in GC work, measured across each collection phase."
+
+For concurrent collectors like Shenandoah, traditional pause-time metrics undercount GC overhead: most GC work is concurrent (not a pause). GCU% captures the total CPU overhead. `jdk.ShenandoahMMU` is the only way to observe this metric in JFR; without it, operators can only see pause times from `jdk.GarbageCollection`, not the concurrent GC CPU overhead.
 
 #### Open questions / upstream concerns
 
@@ -568,6 +596,14 @@ Shenandoah's generational heuristics make nuanced decisions — not just "heap i
 - `decision="degenerated"` and then `decision="full"` on the next cycle → degenerated GC failed to make progress (check `jdk.ShenandoahReclaimProgress`), escalating to full compaction. **Note**: these require emitting from `service_stw_degenerated_cycle()` and `service_stw_full_cycle()`.
 - `decision="normal"` with `generation="Old"` unexpectedly frequent → old gen heuristics are triggering collections often; check trigger type and old-gen usage trends.
 
+#### External references
+
+[JEP 521: Generational Shenandoah](https://openjdk.org/jeps/521) (production-ready JDK 25):
+
+> "The adaptive heuristics predict when the next GC must start, based on current allocation rates, anticipated GC duration, and a margin-of-error adjustment."
+
+The three young-gen trigger types (`rate_average`, `rate_momentary`, `rate_accelerated`) and three old-gen trigger types (`expansion_failure`, `fragmentation`, `growth`) from JEP 521's adaptive heuristics are directly captured in `triggerType`. Without this event, the `-Xlog:gc=info` trigger messages (via `ShenandoahHeuristics::log_trigger()` → `log_info(gc)`) are the only production way to observe these decisions.
+
 #### Open questions / upstream concerns
 
 1. **Multi-site emission**: This event spans `service_concurrent_normal_cycle()` (control thread), `log_trigger()` (regulator thread), and `prepare_for_old_collections()` (old heuristics). Upstream will ask for a single emission point. The standard approach is to accumulate fields into a struct that is populated across the call chain and emitted at the control thread site. This is implementable but requires design work.
@@ -704,6 +740,14 @@ A degenerated GC is Shenandoah's first-tier fallback: when a concurrent GC fails
 - `jdk.GarbageCollection`: records GC completion; does not expose the progress assessment or the escalation counter.
 - No existing JFR event exposes `_consecutive_degenerated_gcs_without_progress`.
 
+#### External references
+
+[JEP 521: Generational Shenandoah](https://openjdk.org/jeps/521) (production-ready JDK 25):
+
+> "Degenerated GC is a stop-the-world fallback. If degenerated GC does not make sufficient progress (free space, memory reclaimed, or fragmentation improvement), the policy escalates to Full GC after two consecutive failures."
+
+This escalation counter (`badProgressCount`, threshold = `CONSECUTIVE_BAD_DEGEN_PROGRESS_THRESHOLD = 2`) is exactly what `jdk.ShenandoahReclaimProgress` exposes. Without this event, the first sign of the escalation chain is the Full GC itself — by which time any tuning opportunity is already missed.
+
 #### Open questions / upstream concerns
 
 1. The 12-field version with cascading nullability will receive pushback. The simplified 5-field version is the right starting point.
@@ -798,6 +842,18 @@ Shenandoah computes this dynamically from mortality rates, so the threshold adap
 #### Why existing events don't cover this
 - `jdk.GarbageCollection`: records GC completion; no tenuring threshold field.
 - No existing JFR event covers Shenandoah-specific tenuring threshold computation.
+
+#### External references
+
+[JEP 521: Generational Shenandoah](https://openjdk.org/jeps/521) (production-ready JDK 25):
+
+> "Dynamic tenuring: The generational Shenandoah collector dynamically adjusts the tenuring threshold based on mortality rates observed in previous collections."
+
+Oracle ZGC Tuning Guide — [ZGC](https://docs.oracle.com/en/java/javase/26/gctuning/z-garbage-collector1.html) (for comparison context):
+
+> "ZGC uses a dynamic tenuring threshold to decide when to promote objects from the young generation to the old generation."
+
+The Shenandoah algorithm uses mortality-rate analysis (`compute_tenuring_threshold()` at `shenandoahAgeCensus.cpp:264`) rather than the simple age-based threshold in G1 and Parallel GC. `jdk.ShenandoahTenuringThreshold` is the only way to observe this per-cycle computation in production.
 
 #### Open questions / upstream concerns
 
@@ -909,6 +965,18 @@ const uint tenuring_threshold = clamp((uint)round(tenuring_threshold_raw), lower
 - `jdk.ZGCConfiguration`: records the static `-XX:ZTenuringThreshold` flag; not the per-cycle dynamic selection (which differs for `"Promote All"` and `"Computed"` paths).
 - `jdk.ZYoungGarbageCollection`: records young collection completion; no tenuring threshold field.
 - No existing JFR event covers ZGC's per-cycle tenuring threshold selection.
+
+#### External references
+
+[JEP 439: Generational ZGC](https://openjdk.org/jeps/439) (production default since JDK 24):
+
+> "Dynamic adaptation: ZGC resizes generations, scales GC threads, and adjusts tenuring thresholds in response to workload changes."
+
+Oracle ZGC Tuning Guide — [ZGC](https://docs.oracle.com/en/java/javase/26/gctuning/z-garbage-collector1.html):
+
+> "ZGC supports the `-XX:ZTenuringThreshold` flag to override the dynamic tenuring decision. Setting this to a fixed value disables the computed path."
+
+The three selection paths (`"Promote All"`, `"ZTenuringThreshold"`, `"Computed"`) are exactly what `jdk.ZGCTenuringThreshold.reason` discriminates. Without this event, operators cannot tell whether the dynamic algorithm is running or whether a flag override or emergency promotion is in effect.
 
 #### Why not merged with jdk.ShenandoahTenuringThreshold
 
@@ -1068,6 +1136,20 @@ G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pau
 - `jdk.EvacuationInformation`: records evacuation outcome at pause time; not refinement throughput between pauses.
 - No existing JFR event exposes G1 concurrent refinement sweep metrics.
 
+#### External references
+
+Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html):
+
+> "The concurrent remembered set update (refinement) work can be controlled with this option. Refinement tries to schedule work concurrently so that at most `-XX:G1RSetUpdatingPauseTimePercent` percent of the maximum pause time goal is spent in the garbage collection pause in the Update RS phase, processing remaining work."
+
+> "An alternative to completely disabling concurrent refinement can be limiting the maximum number of refinement threads by changing the value of `-XX:G1ConcRefinementThreads`. By default, the heuristics allow G1 to use up to the number of parallel GC threads. Work exceeding the capacity of the refinement threads will spill over into the garbage collection pause."
+
+> "The amount of `Pending Cards` relative to `Scanned Cards` determines the refinement work with the `Scan Heap Roots` phase in the garbage collection pause."
+
+The Oracle tuning guide explicitly calls out `-XX:G1ConcRefinementThreads` and the `Pending Cards` metric as controls for GC pause time — yet those knobs are currently only observable via `-Xlog:gc+refine=debug`. `jdk.G1ConcurrentRefinementSweep` makes these observable in production JFR without requiring debug logging.
+
+[JEP 522: Ahead-of-Time Class Loading & Linking](https://openjdk.org/jeps/522) — JDK 25 write barrier redesign: changed how cards are dirtied and re-processed during refinement. The `cardsNoCrossRegion` field directly measures the write-churn artifact introduced by this redesign.
+
 #### Open questions / upstream concerns
 
 1. **Debug-level source**: the primary question upstream will ask. The counter-argument: the `print_refinement_stats()` function is in the product build, the data IS available, and JFR is a production observability tool. The log-level is about `-Xlog` verbosity, not data availability.
@@ -1165,6 +1247,16 @@ Complements `jdk.G1ConcurrentRefinementSweep`: where Sweep shows per-sweep throu
 #### Why existing events don't cover this
 
 - Same analysis as `jdk.G1ConcurrentRefinementSweep` — no existing JFR event covers G1 concurrent refinement policy or thread count adaptation.
+
+#### External references
+
+Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html):
+
+> "Refinement tries to schedule work concurrently so that at most `-XX:G1RSetUpdatingPauseTimePercent` percent of the maximum pause time goal is spent in the garbage collection pause in the Update RS phase, processing remaining work."
+
+> "By default, the heuristics allow G1 to use up to the number of parallel GC threads. Work exceeding the capacity of the refinement threads will spill over into the garbage collection pause."
+
+`jdk.G1ConcurrentRefinementPolicy` directly exposes the `threadsWanted` output of this heuristic and the `pendingCardsTarget` it is trying to satisfy — without debug logging operators cannot see whether the refinement-thread heuristic is converging or diverging from its target.
 
 #### Open questions / upstream concerns
 
@@ -1296,6 +1388,20 @@ Mixed GC is G1's mechanism for reclaiming old-gen space. If mixed GC is not sele
 - `jdk.G1AdaptiveIHOP` / `jdk.G1BasicIHOP`: cover old-gen occupancy threshold for marking trigger; not collection-set selection.
 - `jdk.G1HeapSummary`: records heap sizes at GC boundaries; not mixed-GC region selection reasoning.
 
+#### External references
+
+Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html):
+
+> "You can obtain information about how much time evacuation of either young or old generation regions contribute to the pause-time by enabling the `gc+ergo+cset=debug` log output."
+
+> "Spread the old generation region reclamation across more garbage collections by increasing `-XX:G1MixedGCCountTarget`."
+
+> "Avoid collecting regions that take a proportionally large amount of time to collect by not putting them into the candidate collection set by using `-XX:G1MixedGCLiveThresholdPercent`."
+
+> "Stop old generation space reclamation earlier so that G1 won't collect as many highly occupied regions. In this case, increase `-XX:G1HeapWastePercent`."
+
+Oracle explicitly tells operators to enable `gc+ergo+cset=debug` to diagnose mixed-GC timing — `jdk.G1CollectionSetCandidates` makes this information JFR-accessible without enabling debug logging. The `stopReason` field directly explains which of these three tuning knobs (`G1MixedGCCountTarget`, `G1MixedGCLiveThresholdPercent`, `G1HeapWastePercent`) is the binding constraint.
+
 #### Open questions / upstream concerns
 
 1. **Debug-level source**: same justification as for `jdk.G1ConcurrentRefinementSweep`.
@@ -1426,6 +1532,25 @@ G1 adjusts the committed heap between pauses based on GC CPU usage vs. a target 
 - `jdk.G1HeapSummary`: records heap sizes at GC; not the CPU-usage metrics that drove the resize decision.
 - `jdk.GCHeapSummary`: same — sizes, not drivers.
 
+#### External references
+
+Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html):
+
+> "Like other collectors, G1 aims to size the heap so that the time spent in garbage collection is below the ratio determined by the `-XX:GCTimeRatio` option..."
+
+> "The actual formula for determining the target fraction of time that can be spent in garbage collection before increasing the heap is `1 / (1 + GCTimeRatio)`. This default value results in a target of 4% of the time to be spent in garbage collection." (G1 default `GCTimeRatio=24` → target 1/25 = 4%)
+
+Oracle GC Ergonomics Guide — [Ergonomics](https://docs.oracle.com/en/java/javase/26/gctuning/ergonomics.html):
+
+> "The heap grows or shrinks to a size that will support the chosen throughput goal."
+
+`jdk.G1HeapResize` exposes the exact CPU-usage deviation counter and thresholds behind this ergonomic resize — making the policy's internal state visible without debug logging. The `gcCpuUsageTargetPct` field (= `1/(1+GCTimeRatio)` × heap-scale factor) tells operators whether their `GCTimeRatio` setting matches the actual GC load.
+
+Oracle GC Ergonomics Guide also notes:
+> "If the maximum pause time goal is not being met, then the size of only one generation is shrunk at a time."
+
+This interacts with `jdk.G1HeapResize`'s `atLimit` field: when both `-Xmx` and pause constraints are binding, `atLimit=true` confirms that the heap cannot grow despite the policy wanting it to.
+
 #### Open questions / upstream concerns
 
 1. **Debug-level source**: same argument as for refinement events.
@@ -1541,6 +1666,18 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 - `jdk.ZOldGarbageCollection`: same — outcome event, not trigger-decision event.
 - `jdk.GarbageCollection` (base): same.
 - No existing JFR event exposes ZGC director rule evaluation or non-triggering ticks.
+
+#### External references
+
+[JEP 439: Generational ZGC](https://openjdk.org/jeps/439) (production default since JDK 24):
+
+> "ZGC uses a director thread that continuously evaluates a set of heuristic rules to decide when to start young and old collections. The rules consider allocation rate, heap occupancy, timer intervals, and warmup phase."
+
+Oracle ZGC Tuning Guide — [ZGC](https://docs.oracle.com/en/java/javase/26/gctuning/z-garbage-collector1.html):
+
+> "ZGC starts garbage collection proactively, before allocation stalls occur, by predicting when the heap will fill based on the current allocation rate."
+
+`jdk.ZDirectorRule` directly exposes the director tick data that drives this proactive triggering — currently only visible via `-Xlog:gc+director=debug`. The `timeUntilMinorOOM` field is the director's prediction of heap exhaustion, the core value behind ZGC's proactive model.
 
 #### Open questions / upstream concerns
 
@@ -1699,6 +1836,24 @@ Parallel GC's adaptive size policy implements a feedback control loop that resiz
 - `jdk.GCHeapSummary`: same — resulting sizes only.
 - `jdk.TenuringDistribution` (Parallel): records per-age-bucket counts; not the promotion rate model or the adaptive sizing decision.
 - No existing JFR event covers `PSAdaptiveSizePolicy` decisions.
+
+#### External references
+
+Oracle JDK 26 Parallel GC Tuning Guide — [Parallel Collector](https://docs.oracle.com/en/java/javase/26/gctuning/parallel-collector1.html):
+
+> "The throughput goal is measured in terms of the time spent doing garbage collection versus the time spent outside of garbage collection... The goal is specified by the command-line option `-XX:GCTimeRatio=<N>`, which sets the ratio of garbage collection time to application time to `1 / (1 + <N>)`."
+
+> "Maximum garbage collection pause time: The maximum pause time goal is specified with the command-line option `-XX:MaxGCPauseMillis=<N>`. This is interpreted as a hint that pause times of <N> milliseconds or less are desired; by default, no maximum pause-time goal."
+
+> "The goals are maximum pause-time goal, throughput goal, and minimum footprint goal, and goals are addressed in that order."
+
+> "Statistics such as average pause time kept by the collector are updated at the end of each collection. The tests to determine if the goals have been met are then made and any needed adjustments to the size of a generation is made."
+
+Oracle GC Ergonomics Guide — [Ergonomics](https://docs.oracle.com/en/java/javase/26/gctuning/ergonomics.html):
+
+> "The heap grows or shrinks to a size that will support the chosen throughput goal."
+
+These Oracle descriptions map directly to the event fields: `throughput` (mutator time fraction) vs. `pauseGoalMs` (`MaxGCPauseMillis`), and the priority order (pause > throughput > footprint) determines which branch of `compute_desired_eden_size()` fires. `jdk.PSAdaptiveSizePolicy` makes these real-time policy decisions observable in JFR for the first time.
 
 #### Open questions / upstream concerns
 
