@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-17
+**Last updated**: 2026-08-18
 
 ---
 
@@ -1546,7 +1546,7 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 
 1. **All-debug source**: `zDirector.cpp` has zero `log_info` sites. This is the hardest case to justify to upstream. The argument must be: "the director tick data is production-relevant, the current absence of any JFR signal for no-trigger ticks is an observability gap, and JFR's access model is independent of the log level."
 2. Should the event fire on ticks where no GC is triggered (both `triggeredMinorRule` and `triggeredMajorRule` null)? If yes, the event fires every second even during idle periods. Consider filtering to ticks where at least one rule fired.
-3. The per-tick summary design must be validated: does the information from individual rule functions flow up to a single place in `start_gc()` where all fields are available? The `start_gc()` function receives a `ZDirectorStats stats` argument — the individual rule functions also receive it. `timeUntilMinorOOM` and `minorFreeBytes` are local variables within `rule_minor_allocation_rate_dynamic()` and `rule_minor_high_usage()` respectively. They do NOT bubble up to `start_gc()`. A struct accumulation pattern is required: each rule would populate a `ZDirectorRuleResult` struct, which `make_minor_gc_decision()` / `make_major_gc_decision()` would return alongside the `GCCause::Cause` value. This is a non-trivial design change but is the correct approach.
+3. The per-tick summary design must be validated: does the information from individual rule functions flow up to a single place in `start_gc()` where all fields are available? The `start_gc()` function receives a `ZDirectorStats stats` argument — the individual rule functions also receive it. `minorFreeBytes` (from `is_high_usage()`) is computed from `stats._heap._used` and `stats._heap._soft_max_heap_size` which ARE part of `ZDirectorStats` and accessible at `start_gc()`. However, `timeUntilMinorOOM` is a local variable inside `rule_minor_allocation_rate_dynamic()` — it does NOT bubble up to `start_gc()`. A struct accumulation pattern is required only for `timeUntilMinorOOM`: each rule would populate a `ZDirectorRuleResult` struct, which `make_minor_gc_decision()` would return alongside the `GCCause::Cause` value. This is a non-trivial design change but is the correct approach for `timeUntilMinorOOM`; `minorFreeBytes` can be derived from the heap stats in `ZDirectorStats` directly.
 4. Correction to "both rules null" filtering (question 2): note that `triggeredMajorRule` non-null means minor was **never evaluated** — so a "major triggered" event genuinely has both `triggeredMinorRule=null` (not evaluated) and `triggeredMajorRule=<cause>`. A consumer must not interpret `triggeredMinorRule=null` as "minor evaluated, nothing triggered" — only as "either minor evaluated and did not trigger, or minor was not evaluated because major triggered first." This distinction should be documented in the event schema description.
 
 ---
