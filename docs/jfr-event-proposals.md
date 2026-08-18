@@ -1399,7 +1399,7 @@ Fires at end of every young GC pause.
 | `startTime` | Standard JFR | No | Correlate with `jdk.GarbageCollection` |
 | `shortTermGcCpuUsagePct` | `_analytics->short_term_gc_time_ratio() * 100` — primary driver for deviation counter; increments counter when above `upperThresholdPct`, decrements when below `lowerThresholdPct` | No | Compares against `upperThresholdPct` / `lowerThresholdPct` to determine resize direction; must exceed `G1CPUUsageExpandThreshold` (default 4) counts in a row to trigger expansion |
 | `longTermGcCpuUsagePct` | `_analytics->long_term_gc_time_ratio() * 100` — checked every `long_term_count_limit()` pauses | No | Slow trend; expansion triggers when this exceeds `upperThresholdPct` at the long-term check interval |
-| `deviationCounter` | `_gc_cpu_usage_deviation_counter` — positive → consecutive above-upper-threshold samples; negative → consecutive below-lower-threshold; reset to 0 after each resize | No | Threshold for expansion: counter > `G1CPUUsageExpandThreshold` (default 4); threshold for shrink: counter < -`G1CPUUsageShrinkThreshold` (default -8). Counter = 0 means heap is in tolerance band |
+| `deviationCounter` | `_gc_cpu_usage_deviation_counter` — positive → consecutive above-upper-threshold samples; negative → consecutive below-lower-threshold; reset to 0 after each resize | No | Threshold for expansion: counter **≥** `G1CPUUsageExpandThreshold` (default 4); threshold for shrink: counter **≤** `-G1CPUUsageShrinkThreshold` (default -8). Counter = 0 means heap is in tolerance band |
 | `lowerThresholdPct` | `gc_cpu_usage_target * (1 - G1CPUUsageDeviationPercent/100)` where `gc_cpu_usage_target = 1/(1+GCTimeRatio)` (scaled by heap fill ratio) | No | Below this → shrink candidate |
 | `upperThresholdPct` | `gc_cpu_usage_target * (1 + G1CPUUsageDeviationPercent/100)` | No | Above this → expand candidate |
 | `gcCpuUsageTargetPct` | `1.0 / (1.0 + GCTimeRatio)` × heap-scale factor; steady-state desired GC CPU fraction | No | The target the policy is aiming for. Derivable from `GCTimeRatio` but heap-scaling makes it non-trivial |
@@ -1418,7 +1418,7 @@ G1 adjusts the committed heap between pauses based on GC CPU usage vs. a target 
 - Is the `GCTimeRatio` flag configured to match your workload? If `shortTermGcCpuUsagePct` consistently exceeds `upperThresholdPct` but `atLimit=true`, the heap is constrained — raise `-Xmx`. If it consistently stays below `lowerThresholdPct`, the heap is oversized.
 - Is the sigmoid scaling (`scaleFactorPct`) producing aggressive shrinks that cause repeated expand/shrink oscillation?
 
-**Key diagnosis**: `resizeBytes=0` on every pause means `deviationCounter` has not crossed `G1CPUUsageExpandThreshold` (4) or `-G1CPUUsageShrinkThreshold` (-8). If `shortTermGcCpuUsagePct` oscillates around `upperThresholdPct` but `deviationCounter` never reaches 4, the thresholds are too high. If `deviationCounter` reaches the threshold but `resizeBytes=0`, then `atLimit=true` — the heap cannot expand further.
+**Key diagnosis**: `resizeBytes=0` on every pause means `deviationCounter` has not reached `G1CPUUsageExpandThreshold` (≥4) or `-G1CPUUsageShrinkThreshold` (≤-8). If `shortTermGcCpuUsagePct` oscillates around `upperThresholdPct` but `deviationCounter` never reaches 4, the thresholds are too high. If `deviationCounter` reaches the threshold but `resizeBytes=0`, then `atLimit=true` — the heap cannot expand further.
 
 #### Why existing events don't cover this
 
