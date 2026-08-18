@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 32)
+**Last updated**: 2026-08-18 (pass 33)
 
 ---
 
@@ -218,7 +218,7 @@ Container environments running glibc suffer from well-documented RSS bloat (see 
 
 "What was the JVM's state immediately before throwing GCOverheadLimitExceeded OOM?"
 
-Today, `jdk.OutOfMemoryError` (if it exists) fires at the Java level, after the OOM object has been constructed and is propagating up the call stack. There is no JFR signal at the GC decision point — the moment the GC subsystem decides the overhead limit has been breached. Operators learn about GCOverheadLimitExceeded only via logs or heap dumps, not via a structured JFR record containing the GC time percent and free-space state at the moment of the decision.
+No JFR event fires at the GC decision point — the moment the GC subsystem decides the overhead limit has been breached. Operators learn about `GCOverheadLimitExceeded` only via logs or heap dumps, not via a structured JFR record containing the GC time percent and free-space state at the moment of the decision. The JVM typically exits immediately on the first OOM, so post-hoc analysis is often impossible without pre-configured observability.
 
 #### Emission point
 
@@ -971,10 +971,10 @@ const uint tenuring_threshold = clamp((uint)round(tenuring_threshold_raw), lower
 
 | Field | Source | Nullable? | Tuning use |
 |---|---|---|---|
-| `startTime` | Standard JFR | No | Correlate with `jdk.ZYoungGarbageCollection` gcId |
-| `gcId` | Correlates with jdk.GarbageCollection | No | Link threshold to specific young collection |
-| `tenuringThreshold` | Selected threshold — age in GC cycles before object is promoted | No | Same interpretation as Shenandoah: low = aggressive promotion, high = retention in young gen |
-| `reason` | `"Promote All"` / `"ZTenuringThreshold"` / `"Computed"` | No | **Key discriminator**: `"Promote All"` means memory pressure forced all objects to old gen; `"ZTenuringThreshold"` means admin overrode with `-XX:ZTenuringThreshold=N`; `"Computed"` means the dynamic algorithm ran normally. If you frequently see `"Promote All"`, increase `-Xmx` or the young-gen size |
+| `startTime` | Standard JFR | No | Fires during `select_relocation_set()`, before collection end — earlier than `jdk.ZYoungGarbageCollection` |
+| `gcId` | Correlates with jdk.GarbageCollection | No | Link to specific young collection |
+| `tenuringThreshold` | Selected threshold — age in GC cycles before object is promoted. **Also present in `jdk.ZYoungGarbageCollection.tenuringThreshold`** (at collection end). Included here for context alongside `reason`; if standalone event is replaced by a field addition to `jdk.ZYoungGarbageCollection`, this field becomes redundant. | No | Low = aggressive promotion (more old-gen pressure); high = more object retention in young gen |
+| `reason` | `"Promote All"` / `"ZTenuringThreshold"` / `"Computed"` — the **unique value** of this proposal; not present in any existing JFR event | No | **Key discriminator**: `"Promote All"` = memory pressure forced full flush to old gen; `"ZTenuringThreshold"` = admin flag override in effect; `"Computed"` = dynamic algorithm ran normally. A threshold of 1 means something different for each path — `reason` distinguishes them. |
 
 #### What it is used for
 
@@ -1106,9 +1106,9 @@ A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the t
 
 #### The question it answers
 
-"How fast is G1's concurrent card refinement running, and what is the pending-card backlog?"
+"Is G1's concurrent card refinement keeping up with the mutator write rate, or is it accumulating a backlog that will inflate pause times?"
 
-G1's concurrent refinement thread processes dirty card queue entries between GC pauses. The throughput and backlog of this process directly affect pause time predictability. Under the JDK 25 write barrier redesign ([JEP 522](https://openjdk.org/jeps/522)), refinement behavior changed significantly. Without JFR coverage, operators must enable `-Xlog:gc+refine=debug` to observe refinement dynamics — an option rarely available in production.
+G1's concurrent refinement thread processes dirty card queue entries between GC pauses. If it falls behind, the residual backlog must be drained during the next GC pause under the `G1RSetUpdatingPauseTimePercent` budget — extending pause time unpredictably. Under the JDK 25 write barrier redesign ([JEP 522](https://openjdk.org/jeps/522)), the card-dirtying model changed and refinement throughput characteristics shifted. Without JFR coverage, operators must enable `-Xlog:gc+refine=debug` to observe refinement dynamics — an option rarely available in production.
 
 #### Emission points
 
@@ -1315,9 +1315,9 @@ Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](ht
 
 #### The question it answers
 
-"Why did G1 start or stop mixed GCs, and how many regions were available vs. selected?"
+"How many old-gen regions did G1 select for this mixed GC, and why did selection stop when it did?"
 
-Mixed GC behavior is currently observable only via `-Xlog:gc+ergo+cset=debug`. The selection decision — how many regions were available, how many were selected, and whether the time budget or a region limit caused early termination — is invisible in JFR.
+Mixed GC selection is currently observable only via `-Xlog:gc+ergo+cset=debug`. The selection decision — how many candidate regions were available, how many were selected, and whether the pause-time budget or a region cap caused early termination — is invisible in JFR. Without it, an operator cannot tell whether mixed GC reclamation is bounded by the pause budget (`"Predicted time too high"`), the region cap (`"Maximum number of regions reached"`), or candidate exhaustion.
 
 #### Emission points
 
@@ -1469,9 +1469,9 @@ Oracle explicitly tells operators to enable `gc+ergo+cset=debug` to diagnose mix
 
 #### The question it answers
 
-"Why did G1 expand or shrink its heap, and what CPU-usage metrics drove the decision?"
+"Why did G1 decide to expand or shrink its heap after this pause, and was the resize gated by a capacity limit?"
 
-The size delta is computable from `jdk.G1HeapSummary` events before and after a GC pause. The drivers — short-term and long-term GC CPU usage percentages, thresholds, and the scale factor used for shrink calculations — are not available anywhere in JFR today.
+`jdk.G1HeapSummary` records committed heap sizes at GC boundaries — you can compute the resize delta by diffing consecutive events. But the delta tells you nothing about the CPU-usage deviation counter, the thresholds, or the scale factor that drove the decision. Was the resize triggered because GC CPU exceeded the target? Or suppressed because the heap is already at `-Xmx`? These questions require the policy internals this event exposes.
 
 #### Emission point
 
