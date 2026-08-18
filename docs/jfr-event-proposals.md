@@ -506,6 +506,19 @@ Trigger fields from: regulator thread → heuristic should_start_gc() calls
 |---|---|---|
 | `startTime` | Standard JFR | No |
 | `decision` | `gc_mode_name(gc_mode())` from `ShenandoahGenerationalControlThread` at [`shenandoahGenerationalControlThread.cpp:765`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L765): `"idle"`, `"normal"` (concurrent normal), `"degenerated"` (STW degenerated), `"full"` (STW full), `"old"` (servicing old), `"bootstrap"` (bootstrapping old) | No |
+
+**Source** ([`shenandoahGenerationalControlThread.cpp:765-773`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L765)):
+```cpp
+const char* ShenandoahGenerationalControlThread::gc_mode_name(GCMode mode) {
+  case none:              return "idle";
+  case concurrent_normal: return "normal";    // Young OR Old concurrent collection
+  case stw_degenerated:   return "degenerated"; // STW fallback (GC failed concurrently)
+  case stw_full:          return "full";        // Full compacting GC
+  case servicing_old:     return "old";         // Old-gen collection thread running
+  case bootstrapping_old: return "bootstrap";   // Young + old bootstrap phase
+  case stopped:           return "stopped";     // Control thread exiting
+}
+```
 | `generation` | `"Young"` / `"Old"` / `"Global"` | No |
 | `cause` | `shenandoah_concurrent_gc` / `metadata_GC_threshold` / `alloc_failure` / etc. | No |
 | `available` | Available bytes at decision time | No |
@@ -1043,7 +1056,7 @@ G1ConcurrentRefineThread control loop
 G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pauses. If refinement cannot keep up, the backlog grows and must be processed during the next GC pause — extending pause time. After the [JEP 522](https://openjdk.org/jeps/522) write barrier redesign (JDK 25), the card-dirtying model changed; this event provides the first structured way to monitor refinement throughput in production without enabling debug logging.
 
 **Key diagnosis**:
-- `cardsPending` growing over time → refinement thread count is insufficient; increase `G1ConcurrentRefinementThreads` or check GC CPU overhead.
+- `cardsPending` growing over time → refinement thread count is insufficient; increase `-XX:G1ConcRefinementThreads` or check GC CPU overhead.
 - `cardsClean / cardsScanned` > 50% → many cards are being scanned redundantly; may indicate write barrier generating redundant marks.
 - `cardRefineMs` high relative to inter-GC interval → refinement consuming significant CPU; balance against application threads.
 - `cardsStillRefersToCset` non-zero frequently → consider adjusting CSet selection to reduce the number of regions in CSet that have pending references.
