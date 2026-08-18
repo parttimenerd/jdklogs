@@ -654,7 +654,7 @@ Free space (`free_actual >= free_expected`) is a **hard prerequisite** — if it
 
 This means:
 - `goodProgress=false, failedDimension=free_space` → free was below critical threshold; used/frag not evaluated
-- `goodProgress=false, failedDimension=external_frag` → free passed, but used_space, internal_frag, AND external_frag all failed
+- `goodProgress=false, failedDimension=all_secondary` → free passed, but used_space, internal_frag, AND external_frag all failed
 - `goodProgress=true` → free passed, and at least one of used_space/internal_frag/external_frag passed (the first to pass caused early return)
 
 **Exact source variables at `shenandoahMetrics.cpp:38-90`**:
@@ -676,7 +676,7 @@ The `badProgressCount` is `ShenandoahCollectorPolicy::_consecutive_degenerated_g
 | `startTime` | Standard JFR | No | Correlate with `jdk.GarbageCollection` gcId |
 | `freePercent` | `free_actual * 100 / soft_max_capacity` — available bytes in mutator partition / soft max | No | Low → approaching critical threshold; `ShenandoahCriticalFreeThreshold` (default 1%) is the boundary |
 | `goodProgress` | Boolean result of `is_good_progress()` | No | `false` → this degenerated GC did not improve heap state; watch `badProgressCount` |
-| `failedDimension` | First dimension that failed: `"free_space"` / `"used_space"` / `"internal_frag"` / `"external_frag"` / `null` if passed | Yes | Identifies which resource is constrained: free_space = overall pressure, used_space = GC didn't free enough, frag = heap is fragmented |
+| `failedDimension` | When `goodProgress=false`: `"free_space"` if free gate failed (no further dims checked); `"all_secondary"` if free passed but used_space, internal_frag, AND external_frag all failed; `null` when `goodProgress=true` | Yes | `"free_space"` = heap under pressure, OOM risk; `"all_secondary"` = heap has free space but GC didn't reclaim enough AND fragmentation didn't improve — fragmentation or compaction issue |
 | `badProgressCount` | `_consecutive_degenerated_gcs_without_progress` from `ShenandoahCollectorPolicy`; threshold = `CONSECUTIVE_BAD_DEGEN_PROGRESS_THRESHOLD` (= 2) | No | **Most actionable field**: value ≥ 2 means next non-successful degenerated GC will escalate to Full GC; value = 1 is a warning |
 
 **Full version (12 fields — for reference, not for initial proposal)**:
@@ -694,9 +694,8 @@ The `badProgressCount` is `ShenandoahCollectorPolicy::_consecutive_degenerated_g
 A degenerated GC is Shenandoah's first-tier fallback: when a concurrent GC fails to keep up, the JVM falls back to a stop-the-world degenerated GC. If that too fails to make progress (e.g., heap is full and fragmented), the JVM escalates to Full GC (compacting, much longer pause). This event tells you **whether each fallback GC was productive**, and gives you an early warning of the escalation chain: `badProgressCount=1` means one consecutive failure, `badProgressCount=2` means the next failure triggers Full GC.
 
 **Tuning actions per `failedDimension`**:
-- `free_space`: heap is under sustained pressure — increase `-Xmx`, reduce live set, or lower `ShenandoahCriticalFreeThreshold`
-- `used_space`: GC is running but not freeing enough — increase GC frequency (`ShenandoahMinFreeThreshold`) or reduce object tenure rates
-- `internal_frag` / `external_frag`: fragmentation is not improving despite GC — consider reducing `ShenandoahGarbageThreshold` to collect more aggressive fragmented regions
+- `free_space`: heap free bytes are below `ShenandoahCriticalFreeThreshold` (default 1% of soft max). Heap is under sustained pressure — increase `-Xmx`, reduce live set, or lower `ShenandoahCriticalFreeThreshold` if 1% is too conservative.
+- `all_secondary`: free space passed but GC neither freed enough space (< 1 region worth), nor reduced internal fragmentation by ≥1%, nor reduced external fragmentation by ≥1%. GC ran but made no measurable heap improvement. Possible causes: very high live set (little to collect), severe fragmentation that persists despite GC, or short degenerated cycle that didn't reach enough regions. Consider reducing `ShenandoahGarbageThreshold` to force collection of regions with lower garbage density.
 
 #### Why existing events don't cover this
 
