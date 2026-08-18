@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 35)
+**Last updated**: 2026-08-18 (pass 36)
 
 ---
 
@@ -303,9 +303,9 @@ The JFR event fires at the `log_info` site. To access `long_term_gc_time_ratio` 
 #### Why existing events don't cover this
 
 - No `jdk.OutOfMemoryError` event exists in the JFR metadata — verified against `src/hotspot/share/jfr/metadata/metadata.xml`. The JVM does fire `jdk.JavaErrorThrow` but that is at the Java exception propagation level, after the OOM object is constructed, and carries no GC state fields.
-- `jdk.GCHeapSummary`, `jdk.G1HeapSummary`, `jdk.PSHeapSummary`: record heap sizes at GC events, not at the allocation failure → OOM decision moment.
-- `jdk.GCCPUTime` (G1/Parallel/Serial): records total GC CPU time per pause — does not expose the overhead counter, the violation threshold, or the per-GC-cycle rolling average that drives the `GCOverheadLimitExceeded` decision.
-- No existing JFR event captures the GC overhead limit violation counter or the decision to throw.
+- `jdk.GCHeapSummary`, `jdk.G1HeapSummary`, `jdk.PSHeapSummary`: record heap sizes at GC events (`heapSpace`, `edenSpace`, etc.) — outcome fields at GC boundaries, not at the allocation failure → OOM decision moment. Do not carry `gc_overhead_counter`, `long_term_gc_time_ratio`, or the `GCTimeLimit`/`GCHeapFreeLimit` threshold state.
+- `jdk.GCCPUTime` (G1/Parallel/Serial): records per-pause CPU time (`userTime`, `systemTime`, `realTime`) — does not expose the `_gc_overhead_counter` incremented by `update_gc_overhead_counter()`, the rolling average `long_term_gc_time_ratio()`, or the `GCHeapFreeLimit` free-space check. Even if it did, it fires at pause end, not at the OOM throw point where the counter reached the threshold.
+- No existing JFR event captures the GC overhead limit violation counter or the moment the JVM decides to throw.
 
 #### What it is used for
 
@@ -857,9 +857,10 @@ Shenandoah computes this dynamically from mortality rates, so the threshold adap
 
 #### Why existing events don't cover this
 - `jdk.GarbageCollection`: records GC completion; no tenuring threshold field.
+- `jdk.GarbageCollection`: records GC type, cause, and duration; has no tenuring threshold field, no mortality-rate field, no per-age-cohort analysis. The cause string is always `shenandoah_concurrent_gc` for a normal young collection — it carries no information about whether the threshold was clamped or whether the algorithm found a high-mortality cohort.
 - `jdk.ShenandoahPromotionInformation`: records bytes promoted by generation and region type — the outcome of promotion decisions; does not expose the tenuring threshold or the mortality-rate computation that determined it.
-- `jdk.TenuringDistribution` (G1/Parallel): records per-age object counts; exists only for G1 and Parallel GC, not Shenandoah. Even if it existed, it would not expose the computed threshold — only the distribution.
-- No existing JFR event covers Shenandoah-specific tenuring threshold computation.
+- `jdk.TenuringDistribution` (G1/Parallel): records per-age-bucket object counts; exists only for G1 and Parallel GC, not Shenandoah. Even if it existed for Shenandoah, it would expose the age distribution as an input, not the computed threshold or `ShenandoahGenerationalTenuringMortalityRateThreshold` boundary that determined when to stop scanning.
+- No existing JFR event exposes the `compute_tenuring_threshold()` algorithm result or the min/max clamp bounds in effect for Shenandoah.
 
 #### External references
 
@@ -1171,9 +1172,10 @@ G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pau
 
 #### Why existing events don't cover this
 
-- `jdk.G1AdaptiveIHOP`, `jdk.G1BasicIHOP`: cover old-gen occupancy for marking trigger; nothing about refinement.
-- `jdk.EvacuationInformation`: records evacuation outcome at pause time; not refinement throughput between pauses.
-- No existing JFR event exposes G1 concurrent refinement sweep metrics.
+- `jdk.G1AdaptiveIHOP`, `jdk.G1BasicIHOP`: cover old-gen occupancy threshold for initiating concurrent marking (a separate policy); carry no refinement fields whatsoever.
+- `jdk.EvacuationInformation`: records per-GC-pause evacuation outcome (regions evacuated, bytes copied, region counts) — fires at pause end, not between pauses. Does not carry `cardsScanned`, `cardsPending`, `cardRefineMs`, or any refinement throughput metric.
+- `jdk.GarbageCollection`: records GC cause, duration, and GC ID — outcome event; no refinement data.
+- No existing JFR event exposes the dirty-card queue backlog (`cardsPending`), refinement throughput (`cardRefineMs`, `cardsScanned`), or the write-churn indicator (`cardsNoCrossRegion`).
 
 #### External references
 
@@ -1434,9 +1436,11 @@ Mixed GC is G1's mechanism for reclaiming old-gen space. If mixed GC is not sele
 
 #### Why existing events don't cover this
 
-- `jdk.EvacuationInformation`: records outcome (regions evacuated, bytes copied); not the selection decision.
-- `jdk.G1AdaptiveIHOP` / `jdk.G1BasicIHOP`: cover old-gen occupancy threshold for marking trigger; not collection-set selection.
-- `jdk.G1HeapSummary`: records heap sizes at GC boundaries; not mixed-GC region selection reasoning.
+- `jdk.EvacuationInformation`: records per-pause evacuation outcome — `cSetRegions`, `cSetUsedBefore`, `cSetUsedAfter`, `pinnedInQueue`. These are aggregate result metrics; they do not carry the candidate count before selection, the predicted time per candidate, the `minRegions`/`maxRegions` bounds, or why selection terminated early.
+- `jdk.G1AdaptiveIHOP` / `jdk.G1BasicIHOP`: cover the initiating-heap-occupancy threshold for starting concurrent marking — a separate policy entirely. They say nothing about which old-gen regions were selected for mixed GC or how many candidates were available.
+- `jdk.G1HeapSummary`: records `edenUsedSize`, `edenTotalSize`, `survivorUsedSize`, `metaspaceUsedSize` at GC boundaries — heap-accounting fields only; no region selection reasoning, no `stopReason`, no `availableRegions`.
+- `jdk.GarbageCollection`: records GC cause and duration; the cause `g1_mixed` tells you that mixed GC ran but carries none of the selection-decision data.
+- No existing JFR event exposes `availableRegions`, `selectedRegions`, `stopReason`, or the `minRegions`/`maxRegions` bounds that determine how many old-gen regions G1 will collect per mixed pause.
 
 #### External references
 
@@ -1578,9 +1582,10 @@ G1 adjusts the committed heap between pauses based on GC CPU usage vs. a target 
 
 #### Why existing events don't cover this
 
-- `jdk.G1AdaptiveIHOP`: covers old-gen occupancy threshold for marking, not heap capacity resize.
-- `jdk.G1HeapSummary`: records heap sizes at GC; not the CPU-usage metrics that drove the resize decision.
-- `jdk.GCHeapSummary`: same — sizes, not drivers.
+- `jdk.G1AdaptiveIHOP`: covers old-gen occupancy threshold for initiating concurrent marking; carries `threshold`, `thresholdPercent`, `ihopPercent`, `recentMutatorAllocationSize` — none of these are CPU-usage deviation fields. Does not record committed heap resize.
+- `jdk.G1HeapSummary`: carries `heapSpace` (reserved/committed/used) and `edenUsedSize`/`edenTotalSize`/`survivorUsedSize`/`metaspaceUsedSize` — size outcomes. By diffing consecutive events you can compute the resize delta, but you cannot determine whether the resize was driven by GC CPU usage exceeding `upperThresholdPct`, by the long-term check, or why it was suppressed (`atLimit=true`). The `deviationCounter`, `scaleFactorPct`, and `gcCpuUsageTargetPct` fields are absent entirely.
+- `jdk.GCHeapSummary`: same — `heapSpace` reserved/committed/used; no sizing-decision inputs.
+- `jdk.GCConfiguration`: records `gcTimeRatio` at startup; does not expose the per-pause deviation counter or whether the heap reached a resize threshold.
 
 #### External references
 
@@ -1884,10 +1889,11 @@ Parallel GC's adaptive size policy implements a feedback control loop that resiz
 
 #### Why existing events don't cover this
 
-- `jdk.PSHeapSummary`: records resulting sizes (eden/survivor/old-gen capacities); not the sizing inputs.
-- `jdk.GCHeapSummary`: same — resulting sizes only.
-- `jdk.TenuringDistribution` (Parallel): records per-age-bucket counts; not the promotion rate model or the adaptive sizing decision.
-- No existing JFR event covers `PSAdaptiveSizePolicy` decisions.
+- `jdk.PSHeapSummary`: records resulting sizes — `edenSpace`, `fromSpace`, `toSpace`, `oldSpace` (used/size/start). These are the *outputs* of the sizing policy. They do not carry `mutator_time_percent()`, `minor_gc_time_estimate()`, `_gc_distance_seconds_seq`, `promoted_bytes_estimate()`, or any field from `compute_desired_eden_size()` or `compute_old_gen_shrink_bytes()`.
+- `jdk.GCHeapSummary`: records `heapSpace` reserved/committed/used; same limitation.
+- `jdk.TenuringDistribution` (Parallel): records per-age-bucket counts; shows the age distribution that *results from* the current tenuring threshold, not the `promoted_bytes_estimate()` model or the `survivorOverflow` signal that drives policy adjustments.
+- `jdk.GCConfiguration`: records `gcTimeRatio`, `newRatio` etc. at startup; does not expose the per-cycle `mutator_time_percent()` measurement or whether the throughput goal was currently met.
+- No existing JFR event exposes the `PSAdaptiveSizePolicy` per-cycle decision inputs, branch taken (`throughput_grow`/`pause_shrink`/etc.), or the old-gen shrink calculation.
 
 #### External references
 
