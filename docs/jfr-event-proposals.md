@@ -1347,6 +1347,24 @@ double G1HeapSizingPolicy::scale_cpu_usage_delta(
 
 The sigmoid inflection at `cpu_usage_delta=1.0` (100% deviation from target) means: small deviations produce near-minimum scaling (conservative), deviations at 100%+ produce near-maximum scaling (aggressive). At steepness=6.0, the transition is sharp near 1.0 but not a step function.
 
+**Deviation counter update logic** ([`g1HeapSizingPolicy.cpp:226-244`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L226)):
+
+```cpp
+// Thresholds: target ± G1CPUUsageDeviationPercent (default 25%)
+const double upper_threshold = gc_cpu_usage_target * (1 + G1CPUUsageDeviationPercent/100.0);
+const double lower_threshold = gc_cpu_usage_target * (1 - G1CPUUsageDeviationPercent/100.0);
+
+// Counter update per GC pause:
+if (short_term_gc_cpu_usage > upper_threshold) {
+  _gc_cpu_usage_deviation_counter++;   // → expand when counter >= G1CPUUsageExpandThreshold (4)
+} else if (short_term_gc_cpu_usage < lower_threshold) {
+  _gc_cpu_usage_deviation_counter--;   // → shrink when counter <= -G1CPUUsageShrinkThreshold (-8)
+}
+// Reset to 0 after each successful resize. Halved (not zeroed) on soft reset.
+```
+
+The `deviationCounter` field captures this accumulated state: positive = N consecutive above-upper-threshold pauses; negative = N consecutive below-lower-threshold pauses; 0 = within tolerance band or just resized.
+
 **Exact log message** via `log_resize()` ([`g1HeapSizingPolicy.cpp:82`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L82)):
 ```
 log_debug(gc, ergo, heap)("Heap resize: "
