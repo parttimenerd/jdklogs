@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 34)
+**Last updated**: 2026-08-18 (pass 35)
 
 ---
 
@@ -166,10 +166,8 @@ A JFR event implementation **must not** gate data collection on whether `-Xlog:t
 | `trimCount` | `uint64_t _num_trims_performed` — cumulative since JVM start; first event = 1 | No | Monotonically increasing; gaps in a continuous recording indicate missed events (buffer overflow or JFR disabled) |
 | `beforeBytes` | `sc.before` from `/proc/self/status VmRSS` | Yes — null on non-Linux or restricted containers | Pre-trim RSS; compare to `afterBytes` to measure recovery |
 | `afterBytes` | `sc.after` | Yes — same condition | Post-trim RSS |
-| `deltaBytes` | `afterBytes - beforeBytes` — **SIGNED**; negative = memory returned to OS | Yes — same condition | **Primary metric**: large negative value (e.g. −100MB) = significant arena bloat was present; near-zero = either minimal bloat or platform doesn't support RSS recovery |
+| `deltaBytes` | `afterBytes - beforeBytes` — **SIGNED**; negative = memory returned to OS (afterBytes < beforeBytes). Near zero = either no arena bloat or platform does not support RSS recovery. Positive = RSS grew during the trim window (concurrent allocation outpaced reclaim). | Yes — same condition | **Primary metric**: large negative value (e.g. −100MB) = significant glibc arena fragmentation was present and recovered; near-zero after `detailsAvailable=true` = arenas are fully committed, adjust `-XX:TrimNativeHeapInterval` |
 | `detailsAvailable` | `sc.after != SIZE_MAX` — false on non-Linux or when `/proc/self/status` is inaccessible | No | When `false`, `beforeBytes`/`afterBytes`/`deltaBytes` are all null; trim ran but RSS data unavailable |
-
-The sign convention on `deltaBytes` is important: a successful trim returns a **negative** delta (afterBytes < beforeBytes = memory returned to OS). This is counterintuitive but matches the "after minus before" arithmetic. If upstream prefers an unsigned `freedBytes = max(0, beforeBytes - afterBytes)`, that is an equivalent design choice.
 
 #### What it is used for
 
@@ -348,7 +346,7 @@ Oracle JDK 26 documentation on `GCOverheadLimit`:
 
 "What fraction of wall-clock time is the Shenandoah GC consuming vs. mutator threads?"
 
-`jdk.G1MMU` exists but measures something different: G1 MMU is pause-time compliance within a fixed time-slice window (gcTime in ms vs. pauseTarget in ms). Shenandoah MMU measures GCU%/MU% fractions over the entire GC phase window — the time spent doing GC work as a fraction of elapsed wall-clock time. These are semantically distinct metrics and there is no overlap.
+`jdk.G1MMU` exists but measures something structurally different: it records `gcTime` (ms stopped in GC during last time slice) vs. `pauseTarget` (max allowed pause in that slice) — a discrete pause-compliance check. Shenandoah GCU%/MU% measures the CPU-time fraction over the **entire GC phase window**, including concurrent GC work that is not a pause at all. For a concurrent collector, GCU% is the more complete overhead metric: it captures the CPU cost of all GC work (concurrent + STW), while `jdk.G1MMU`-style pause fractions miss the concurrent portion entirely.
 
 No existing JFR event covers Shenandoah's GCU%/MU% breakdown.
 
@@ -540,8 +538,8 @@ Trigger fields from: regulator thread → heuristic should_start_gc() calls
 | `startTime` | Standard JFR | No | Cycle start timestamp |
 | `decision` | `gc_mode_name(gc_mode())` from `ShenandoahGenerationalControlThread` at [`shenandoahGenerationalControlThread.cpp:765`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L765): `"idle"`, `"normal"` (concurrent normal), `"degenerated"` (STW degenerated), `"full"` (STW full), `"old"` (servicing old), `"bootstrap"` (bootstrapping old) | No | **GC type**: at the current `service_concurrent_normal_cycle()` emission point this is always `"normal"`. See open question 3 for expansion to other modes. |
 | `generation` | `"Young"` / `"Old"` / `"Global"` | No | Which generation is targeted — Young is the common path; Old means old-gen collection is running; Global is a full-heap concurrent GC |
-| `cause` | `shenandoah_concurrent_gc` / `metadata_GC_threshold` / `alloc_failure` / etc. | No | Why GC was requested — `alloc_failure` means allocation couldn't complete without GC (urgent) |
-| `available` | Available bytes at decision time | No | Heap headroom at cycle start; compare against `softMaxCapacity` to compute fill fraction |
+| `cause` | `shenandoah_concurrent_gc` / `metadata_GC_threshold` / `alloc_failure` / etc. from `GCCause` enum | No | Why GC was requested: `shenandoah_concurrent_gc` = normal heuristic-driven cycle; `alloc_failure` = allocation could not complete without GC (urgent, expect high GCU%); `metadata_GC_threshold` = metaspace/class loading pressure |
+| `available` | Available bytes at decision time (mutator free partition) | No | Heap headroom at cycle start; `1 - available/softMaxCapacity` = fill fraction. Low fill fraction (< 10%) at cycle start means the heuristic triggered very late — tuning `ShenandoahMinFreeThreshold` may help |
 | `softMaxCapacity` | Soft max capacity in bytes (`-XX:SoftMaxHeapSize`) | No | Current effective heap ceiling; `1 - available/softMaxCapacity` = utilization at GC start |
 
 **Source** ([`shenandoahGenerationalControlThread.cpp:765-773`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L765)):
@@ -1403,7 +1401,7 @@ GC pause thread (during CSet finalization, before evacuation)
 | `candidateType` | `"Marking"` or `"Retained"` — two passes per mixed GC; marking candidates come from completed marking, retained from previous mixed GCs where optional regions were not evacuated | No | **Marking**: primary old-gen reclaim path. **Retained**: secondary path for optional regions deferred from prior pauses |
 | `minRegions` | `min_old_cset_length` / `min_retained_old_cset_length` — minimum regions that will be added regardless of time budget | No | If `selectedRegions < minRegions`, time budget was exceeded but regions were added anyway (see `overBudgetRegions`) |
 | `maxRegions` | `max_old_cset_length` — maximum regions the policy will add | No | If `availableRegions > maxRegions`, selection stopped at `maxRegions` despite having more candidates; tune `-XX:G1OldCSetRegionThresholdPercent` |
-| `availableRegions` | Candidate regions count at selection start | No | How many old-gen regions the GC could potentially reclaim |
+| `availableRegions` | Candidate regions count at selection start — for Marking: old-gen regions above `G1MixedGCLiveThresholdPercent` (default 85%) liveness that completed marking; for Retained: optional regions deferred from the prior mixed pause | No | **Reclamation opportunity gauge**: high `availableRegions` means old gen has many reclaimable regions; if `selectedRegions / availableRegions` is consistently low, the pause budget or `maxRegions` cap is the bottleneck. If `availableRegions` is low, the live set is dense — old gen may grow despite mixed GC running |
 | `availableGroups` | Candidate groups (card-set groups) available | Consider dropping | Groups are an internal optimization structure; region count is more actionable |
 | `selectedRegions` | Initial (`num_inital_regions`) + normal regions actually selected | No | Compare to `availableRegions`: low ratio means time budget or `maxRegions` was the binding constraint |
 | `optionalRegions` | Optional regions selected (deferred to optional evacuation step) | No | Non-zero = time budget allowed for additional regions beyond the initial selection; these are attempted if time permits during evacuation |
@@ -1608,7 +1606,7 @@ This interacts with `jdk.G1HeapResize`'s `atLimit` field: when both `-Xmx` and p
 1. **Debug-level source**: same argument as for refinement events.
 2. **Shrink-path-only nullable fields**: `scaleFactorPct`, `freeRegions`, `regionsNeededForAlloc` are null on the expansion path. Upstream may want these separated into an expansion event and a shrink event.
 3. **Fires on no-resize**: should the event be gated on `resizeBytes != 0`? An event that fires every young GC (even when nothing changed) adds noise. Gate on non-zero unless the "no resize and why not" information is itself valuable.
-4. Should `gcCpuUsageTargetPct` be omitted since it is derivable from `GCTimeRatio` (available from `jdk.GCConfiguration`)?
+4. Should `gcCpuUsageTargetPct` be omitted since it is derivable from `GCTimeRatio` (available from `jdk.GCConfiguration`)? **Recommendation**: keep it. The `scale_with_heap()` function modifies the target when committed heap ≤ half of max capacity (`target *= capacity / (max_capacity/2)`, floored at 1%) — the effective target is *not* simply `1/(1+GCTimeRatio)` in that case. Without emitting the scaled value, operators cannot reason about why expansion triggered at a non-standard threshold.
 
 ---
 
@@ -1622,7 +1620,7 @@ This interacts with `jdk.G1HeapResize`'s `atLimit` field: when both `-Xmx` and p
 
 "Why did ZGC trigger (or not trigger) a collection this tick?"
 
-`jdk.ZYoungGarbageCollection` and `jdk.ZOldGarbageCollection` fire after GC is chosen and record outcomes. Director decisions — especially ticks where no GC is triggered — produce no event at all today. An operator cannot distinguish "ZGC decided not to collect" from "ZGC was never evaluated" without debug logging.
+`jdk.ZYoungGarbageCollection` and `jdk.ZOldGarbageCollection` fire after GC is chosen and record outcomes. Director decisions — especially ticks where no GC is triggered — produce no event at all today. The director runs every ~1s, evaluating all rules on every tick. When no rule fires, there is complete silence in JFR: an operator cannot tell whether the heap was genuinely idle, whether allocation pressure was building but not yet past the threshold, or whether a GC was already running and the director skipped triggering a new one.
 
 #### Emission points
 
@@ -1704,8 +1702,8 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 
 **Key diagnostic patterns**:
 - `triggeredMinorRule="_z_allocation_rate"` with decreasing `timeUntilMinorOOM` → increasing allocation pressure; if `timeUntilMinorOOM < typical_gc_duration`, allocation stalls are imminent.
-- `triggeredMajorRule="_z_allocation_rate"` → allocation rate exceeded the young-gen capacity threshold; ZGC triggered a major collection directly (minor was not evaluated). This should be rare — frequent occurrence means the young gen is too small relative to allocation rate.
-- All ticks showing both rules null (no GC triggered) → ZGC is idle; heap usage is low relative to capacity. Expected during low-load periods.
+- `triggeredMajorRule="_z_allocation_rate"` → allocation rate exceeded the young-gen capacity threshold; ZGC triggered a major collection directly (minor was never evaluated — `triggeredMinorRule=null` here means preempted, not idle). This should be rare — frequent occurrence means the young gen is too small relative to allocation rate.
+- Both rules null → ZGC evaluated all rules this tick and none fired; heap is not under sufficient pressure to warrant collection. Expected during low-load periods. Distinguish from the major-preempts-minor case by checking `triggeredMajorRule` first.
 - `triggeredMajorRule="_z_warmup"` in steady state → warmup period was miscalibrated or the JVM restarted; this rule should only fire during initial heap fill.
 
 #### Current 22-field design (full reference — not for upstream proposal as-is)
@@ -1862,8 +1860,8 @@ GC pause thread (within PSScavenge::invoke)
 | `promotedBytesLast` | `_promoted_bytes.last()` — actual bytes promoted last cycle | No | Compare against `promotedBytesEstimate`: a spike relative to estimate means a burst of promotions; smoothed value will lag |
 | `survivorOverflow` | Boolean: survivor space was full, forcing premature promotion to old gen | No | `true` → objects that are still young were forced into old gen. Indicates survivor too small; increase `SurvivorRatio` or reduce `MaxTenuringThreshold` |
 | `desiredEden` | Captured at `PSYoungGen::compute_desired_sizes()` — policy's desired eden size this cycle | No | Tracks policy evolution; compare to actual eden size from `jdk.PSHeapSummary` to see if heap size is constraining the policy |
-| `desiredSurvivor` | Captured at `PSYoungGen::compute_desired_sizes()` | No | Same — desired survivor size |
-| `throughputEdenIncrease` | Eden increase amount when taking the throughput-increase branch | Yes (null on pause-reduction branch) | Non-null means throughput was below goal and the policy is growing eden |
+| `desiredSurvivor` | Captured at `PSYoungGen::compute_desired_sizes()` — policy's desired survivor space size this cycle | No | Compare to `desiredEden`: if `desiredSurvivor` grows while `desiredEden` shrinks, the policy is shifting capacity toward survivor to absorb `survivorOverflow`. If `desiredSurvivor` is stable and small while `survivorOverflow=true` fires, the survivor space is genuinely too small for the promotion rate — increase `-XX:SurvivorRatio` |
+| `throughputEdenIncrease` | Eden increase amount when taking the throughput-increase branch (Branch 1 of `compute_desired_eden_size()`) | Yes (null on all other branches) | Non-null means throughput was below goal and the policy grew eden. **Consider replacing with `edenSizingBranch` string (see open question 3)** — the branch label is more readable and eliminates the nullability |
 | `oldGenFree` | From `compute_old_gen_shrink_bytes()` — current old gen free bytes | No | How much headroom exists in old gen |
 | `minFreeBytes` | `max(padded_average_promoted_in_bytes(), promotion_rate_estimate × 600s)` — 10-minute promotion lookahead floor from [`psAdaptiveSizePolicy.cpp:165`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp#L165): `static constexpr double lookahead_sec = 10 * 60` | No | Old gen will not be shrunk below `minFreeBytes`; if `oldGenFree < minFreeBytes`, no shrink occurs. High `minFreeBytes` relative to `oldGenFree` → policy won't shrink old gen even if it looks underused (promotion rate is too high) |
 | `shrinkBytes` | Old gen shrink amount; 0 if no shrink | No | Non-zero → policy is actively shrinking old gen; risk of promotion failure if promotion rate spikes |
@@ -1882,6 +1880,7 @@ Parallel GC's adaptive size policy implements a feedback control loop that resiz
 - `minorPauseMs > pauseGoalMs` and `desiredEden < currentEden` → policy is actively shrinking eden to reduce pause time; if throughput also degrades, `MaxGCPauseMillis` is set too low.
 - `gcDistanceSec` very short (< 0.5s) → GC running more than twice per second; heap may be too small for workload.
 - `shrinkBytes > 0` frequently → policy is repeatedly shrinking old gen; watch for `promotedBytesEstimate` spikes that could overflow the shrunk space.
+- **Oscillating policy** (`throughput < goal` → eden grows → `minorPauseMs > pauseGoalMs` → eden shrinks → `throughput < goal` again): the policy is fighting itself. Visible as alternating non-null `throughputEdenIncrease` and `minorPauseMs > pauseGoalMs` in successive events. Resolution: raise `-XX:MaxGCPauseMillis` to give the throughput goal more room, or unset it entirely if pause control is not needed.
 
 #### Why existing events don't cover this
 
@@ -1912,7 +1911,7 @@ These Oracle descriptions map directly to the event fields: `throughput` (mutato
 
 1. **Debug-level source**: all three emission points are `log_debug(gc,ergo)`. Same justification applies: the data is in the product build, and JFR provides production access without requiring debug log activation.
 2. **Three-source coordination — simpler than it looks**: `print_stats()` fires at `psScavenge.cpp:431`, then `resize_after_young_gc()` is called at line 432 and contains both `compute_desired_sizes()` and `compute_old_gen_shrink_bytes()` calls. A single JFR event emission at the end of `ParallelScavengeHeap::resize_after_young_gc()` can capture all fields from old-gen shrink and young-gen sizing in one place. The only field from `print_stats()` that needs to be read is the `throughput`/`minorPauseMs` from the policy object — those are available as accessor methods (`size_policy->mutator_time_percent()`, `size_policy->minor_gc_time_estimate()`) and can be called from within `resize_after_young_gc()` at emit time without any struct accumulation.
-3. Should `throughputEdenIncrease` be dropped to eliminate the one nullable field? If the throughput-vs-pause-goal branching information is important, an alternative is to add a `sizingBranch` string field (`"throughput"` / `"pause"` / `"no_change"`) and drop the nullable branch-specific field.
+3. **Recommended**: replace `throughputEdenIncrease` (nullable, branch-specific) with a non-null `edenSizingBranch` string field: `"throughput_grow"` (Branch 1: throughput below goal, grow eden) / `"pause_shrink"` (Branch 2: pause exceeded goal, shrink eden) / `"distance_grow"` (Branch 3: GC too frequent, grow eden) / `"distance_shrink"` (Branch 4: GC too rare, shrink eden slightly) / `"unchanged"` (no condition triggered). This eliminates the nullable field, captures which branch fired, and is more informative than the raw eden-delta amount (which is computable from `jdk.PSHeapSummary` diffs anyway).
 4. Is `gcDistanceSec` vs `gcDistanceSecLast` both needed, or is the smoothed average sufficient?
 
 ---
