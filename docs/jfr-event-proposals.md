@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 36)
+**Last updated**: 2026-08-18 (pass 37)
 
 ---
 
@@ -102,7 +102,7 @@ Neither is trivial. Proposing the JFR event without resolving this first will re
 
 Today, an operator can observe that `TrimNativeHeapInterval` is set, but has no JFR signal confirming that trims are executing or recovering any memory. The only visibility is via `-Xlog:trimnative=info`. There is no existing JFR event tracking deliberate native heap trimming or the RSS delta it produces.
 
-`jdk.ResidentSetSize` (JDK 27 master) tracks instantaneous RSS. It is complementary: it answers "what is RSS right now," not "how much did a trim operation recover." The delta from a deliberate trim cannot be reconstructed from instantaneous RSS snapshots because other allocation activity happens concurrently.
+`jdk.ResidentSetSize` tracks instantaneous RSS (`size` and `peak` fields, fires per-chunk). It is complementary: it answers "what is RSS right now," not "how much did a trim operation recover." The delta from a deliberate trim cannot be reconstructed from instantaneous RSS snapshots because other allocation activity happens concurrently.
 
 #### Emission point
 
@@ -183,8 +183,8 @@ Containerized JVMs running glibc suffer from a well-known RSS bloat problem: mal
 
 #### Why existing events don't cover this
 
-- `jdk.ResidentSetSize`: tracks instantaneous RSS, not trim deltas. Cannot distinguish a trim recovery from normal allocation fluctuation.
-- No other JFR event mentions `trimnative`, `NativeHeapTrimmer`, or `os::trim_native_heap`.
+- `jdk.ResidentSetSize`: carries `size` (current RSS) and `peak` (peak RSS since JVM start); fires `period="everyChunk"` as a snapshot. It answers "what is RSS right now" — it cannot attribute a change to a deliberate trim operation, because other allocation/deallocation activity happens concurrently. There is no `deltaBytes` field, no `trimDuration` field, and no way to isolate a single trim operation's contribution from background noise. The two events are orthogonal: `jdk.NativeHeapTrim` says "this specific trim recovered X bytes in Y ms"; `jdk.ResidentSetSize` says "RSS is currently Z bytes".
+- No other JFR event references `NativeHeapTrimmer`, `TrimNativeHeapInterval`, or `os::trim_native_heap`.
 
 #### External references
 
@@ -196,7 +196,7 @@ The PR was closed due to inactivity following a design disagreement about a broa
 
 Container environments running glibc suffer from well-documented RSS bloat (see Thomas Stuefe's work on `os::trim_native_heap` and the Red Hat container JVM investigations). `-XX:TrimNativeHeapInterval` was introduced specifically to address this; `jdk.NativeHeapTrim` closes the JFR observability gap for it.
 
-`jdk.ResidentSetSize` (JDK 27) is a complementary event — it answers "what is RSS right now" but cannot attribute changes to deliberate trims vs. allocation fluctuation. The two events are orthogonal.
+`jdk.ResidentSetSize` is a complementary event — it answers "what is RSS right now" but cannot attribute changes to deliberate trims vs. allocation fluctuation. The two events are orthogonal.
 
 #### Open questions / upstream concerns
 
@@ -856,7 +856,6 @@ Shenandoah computes this dynamically from mortality rates, so the threshold adap
 | `tenuringThreshold` suddenly drops after being stable | New allocation pattern with shorter-lived objects; algorithm adapting | Expected during warm-up or after a workload phase change. Transient. |
 
 #### Why existing events don't cover this
-- `jdk.GarbageCollection`: records GC completion; no tenuring threshold field.
 - `jdk.GarbageCollection`: records GC type, cause, and duration; has no tenuring threshold field, no mortality-rate field, no per-age-cohort analysis. The cause string is always `shenandoah_concurrent_gc` for a normal young collection — it carries no information about whether the threshold was clamped or whether the algorithm found a high-mortality cohort.
 - `jdk.ShenandoahPromotionInformation`: records bytes promoted by generation and region type — the outcome of promotion decisions; does not expose the tenuring threshold or the mortality-rate computation that determined it.
 - `jdk.TenuringDistribution` (G1/Parallel): records per-age-bucket object counts; exists only for G1 and Parallel GC, not Shenandoah. Even if it existed for Shenandoah, it would expose the age distribution as an input, not the computed threshold or `ShenandoahGenerationalTenuringMortalityRateThreshold` boundary that determined when to stop scanning.
@@ -1066,7 +1065,7 @@ Fires at end of every ZGC generation collection (both young and old).
 #### Why existing events don't cover this
 
 - No existing JFR event exposes nmethod registration counts for any GC.
-- `jdk.CodeCacheStatistics`: covers the code cache globally; does not expose per-GC nmethod table state.
+- `jdk.CodeCacheStatistics`: carries `entryCount`, `methodCount`, `adaptorCount`, `unallocatedCapacity` for each code heap (`codeBlobType`) — global code cache occupancy metrics. Does not expose the ZGC-specific nmethod table (`ZNMethodTable`) which is a separate data structure, nor does it expose `_nunregistered` stale slots or per-GC scan costs.
 
 #### What it is used for
 
@@ -1289,7 +1288,7 @@ Complements `jdk.G1ConcurrentRefinementSweep`: where Sweep shows per-sweep throu
 
 #### Why existing events don't cover this
 
-- Same analysis as `jdk.G1ConcurrentRefinementSweep` — no existing JFR event covers G1 concurrent refinement policy or thread count adaptation.
+- Same analysis as `jdk.G1ConcurrentRefinementSweep` applies for the base refinement gap. Additionally: no existing JFR event exposes the adaptive refinement thread count (`threadsWanted`) or the `pendingCardsTarget` policy parameter. These are the key outputs of the `adjust_threads_wanted()` heuristic — the thread count the policy *wants* vs. what it *has* — and neither is observable in any existing JFR event.
 
 #### External references
 
