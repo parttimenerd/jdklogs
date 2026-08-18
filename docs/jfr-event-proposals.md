@@ -367,6 +367,42 @@ ShenandoahMmuTask::task()   [PeriodicTask at GCPauseIntervalMillis ~200ms]
 
 **Thread**: Generational control thread (end-of-cycle); dedicated timer thread (periodic).
 
+**GCU% computation** ([`shenandoahMmuTracker.cpp:86-110`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L86)):
+
+```cpp
+void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
+  double current = os::elapsedTime();
+  _most_recent_gcid = gcid;
+
+  double gc_cycle_period = current - _most_recent_timestamp;  // wall-clock since last GC
+  _most_recent_timestamp = current;
+
+  double gc_thread_time, mutator_thread_time;
+  fetch_cpu_times(gc_thread_time, mutator_thread_time);  // cumulative CPU times
+
+  // GCU = (GC thread CPU time this cycle) / (active CPUs × wall-clock time)
+  double gc_time = gc_thread_time - _most_recent_gc_time;
+  _most_recent_gc_time = gc_thread_time;
+  _most_recent_gcu = gc_time / (_active_processors * gc_cycle_period);
+
+  // MU = mutator CPU fraction (not simply 100 - GCU; can exceed 1.0 briefly)
+  double mutator_time = mutator_thread_time - _most_recent_mutator_time;
+  _most_recent_mutator_time = mutator_thread_time;
+  _most_recent_mu = mutator_time / (_active_processors * gc_cycle_period);
+
+  log_info(gc, ergo)("At end of %s: GCU: %.1f%%, MU: %.1f%% during period of %.3fs",
+                     msg, _most_recent_gcu * 100, _most_recent_mu * 100, gc_cycle_period);
+}
+```
+
+**Callers** (the `phase` string and exact GC phase):
+- `record_young(gcid)` → `"Concurrent Young GC"`
+- `record_global(gcid)` → `"Concurrent Global GC"`
+- `record_bootstrap(gcid)` → `"Concurrent Bootstrap GC"`
+- `record_mixed(gcid)` → `"Mixed Concurrent GC"`
+- `record_full(gcid)` → `"Full GC"`
+- Degenerated GC caller → `"Degenerated %s GC"` (formatted by `shenandoahDegeneratedGC.cpp:61`)
+
 #### Fields
 
 | Field | Source | Nullable? | Tuning use |
