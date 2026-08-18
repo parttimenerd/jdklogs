@@ -243,7 +243,7 @@ Allocating application thread
 
 **GCOverheadLimit feature**: Implemented in G1 via [JDK-8212084](https://bugs.openjdk.org/browse/JDK-8212084), [PR #27950](https://github.com/openjdk/jdk/pull/27950), merged JDK 26. Also present in Parallel GC.
 
-**Counter-update vs. throw-point distinction**: `update_gc_overhead_counter()` ([`g1CollectedHeap.cpp:995`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)) runs at each safepoint and logs the raw counter at `log_debug(gc)`. The JFR event belongs at the throw point — `satisfy_failed_allocation()` line 1109 — where `gc_overhead_limit_exceeded()` returns true and control flow is about to return null to the allocating thread. At that point, the final counter value, `long_term_gc_time_ratio`, and `free_space_percent` are all in scope.
+**Counter-update vs. throw-point distinction**: `update_gc_overhead_counter()` ([`g1CollectedHeap.cpp:995`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)) runs at each safepoint and logs the raw counter at `log_debug(gc)`. The JFR event belongs at the throw point — `satisfy_failed_allocation()` line 1109 — where `gc_overhead_limit_exceeded()` returns true and control flow is about to return null to the allocating thread. The `long_term_gc_time_ratio` and `free_space_percent` locals are scoped inside `update_gc_overhead_counter()` and are NOT directly in scope at line 1109; the JFR implementation must re-read them at the emission site (both are cheap accessor calls — see field table below).
 
 **G1 counter update + throw point** ([`g1CollectedHeap.cpp:995-1111`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)):
 
@@ -273,7 +273,8 @@ update_gc_overhead_counter();   // Update counter first
 // At line 1109: check and log:
 if (gc_overhead_limit_exceeded()) {  // _gc_overhead_counter >= GCOverheadLimitThreshold (=5)
   log_info(gc)("GC Overhead Limit exceeded too often (%zu).", GCOverheadLimitThreshold);
-  // ← JFR event fires HERE; fields in scope: long_term_gc_time_ratio, free_space_percent
+  // ← JFR event fires HERE; must re-read long_term_gc_time_ratio and free_space_percent
+  //   via _policy->analytics()->long_term_gc_time_ratio() and percent_of(...) — not in scope here
 }
 return nullptr;  // OOM thrown to allocating thread
 ```
@@ -287,7 +288,7 @@ The JFR event fires at the `log_info` site. To access `long_term_gc_time_ratio` 
 | `startTime` | Standard JFR | Yes | Yes | No |
 | `gcId` | `GCId::peek() - 1` — last assigned GC id; `peek()` returns `_next_id` (the NEXT id to be assigned), so `peek()-1` gives the last completed GC id | Yes | Yes | Yes (undefined if no GC has run yet) |
 | `collector` | String literal: `"G1"` or `"Parallel"` | Yes | Yes | No |
-| `gcTimePercent` | G1: `_policy->analytics()->long_term_gc_time_ratio() * 100` ([`g1CollectedHeap.cpp:1002`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1002)); Parallel: `100 - _size_policy->mutator_time_percent() * 100` ([`parallelScavengeHeap.cpp:436`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L436)) | Yes | Yes | No |
+| `gcTimePercent` | G1: `_policy->analytics()->long_term_gc_time_ratio() * 100` ([`g1CollectedHeap.cpp:1002`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1002)) — must be re-read via this accessor at line 1109, not taken from `update_gc_overhead_counter()` local; Parallel: `_size_policy->gc_time_percent() * 100` (= `(1 - mutator_time_percent()) * 100`) — `gc_time_percent()` returns a fraction 0..1 ([`adaptiveSizePolicy.hpp:151`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shared/adaptiveSizePolicy.hpp#L151)), member accessible at line 507 | Yes | Yes | No |
 | `freeSpacePercent` | G1: `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())` ([`g1CollectedHeap.cpp:1003`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1003)) | Yes | No | Yes (null for Parallel) |
 | `freeSpaceYoungPercent` | Parallel: `percent_of(_young_gen->free_in_bytes(), _young_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:437`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L437)) | No | Yes | Yes (null for G1) |
 | `freeSpaceOldPercent` | Parallel: `percent_of(_old_gen->free_in_bytes(), _old_gen->capacity_in_bytes())` ([`parallelScavengeHeap.cpp:438`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L438)) | No | Yes | Yes (null for G1) |
@@ -312,7 +313,7 @@ The JFR event fires at the `log_info` site. To access `long_term_gc_time_ratio` 
 1. G1 and Parallel have different free-space field shapes. The nullable pattern is acceptable in JFR but upstream may want two separate events (`jdk.G1GCOverheadLimitExceeded`, `jdk.ParallelGCOverheadLimitExceeded`) to avoid the impedance mismatch. The trade-off: separate events are cleaner but require more boilerplate.
 2. `gcId` should use `GCId::peek() - 1` (last assigned GC id). `GCId::peek()` returns `_next_id` (the id to be assigned to the NEXT GC), so the last completed GC id is `peek() - 1`. If `peek() == 0` (no GC has run), the field should be `undefined`. Alternatively, use `GCId::current_or_undefined()` if the throw-point happens to be on a GC thread, but at `satisfy_failed_allocation()` the thread is the allocating application thread, so `current()` would assert — `peek()-1` is the correct mechanism.
 3. `consecutiveViolations` is always equal to `GCOverheadLimitThreshold` at throw time (the counter must reach the threshold to throw). Furthermore, `GCOverheadLimitThreshold = 5` is a `develop` flag — it cannot be changed in production builds. This means `consecutiveViolations` is always 5 at throw time: it is a constant disguised as a variable. The field could be omitted, or replaced with a `thresholdViolations` boolean (was threshold hit = always true). Alternatively, keep it to make the event schema self-documenting even if the value is always 5.
-4. Both GC implementations call `update_gc_overhead_counter()` (G1) / `check_gc_overhead_limit()` (Parallel) from `satisfy_failed_allocation()` and then check the result before throwing. The event must fire **after** the counter update and **before** returning null — i.e., at the `if (gc_overhead_limit_exceeded())` block at line 1109 / line 506 respectively. The `long_term_gc_time_ratio` and free-space values are local to `update_gc_overhead_counter()` and not in scope at line 1109 — they must be re-read at the emission site or stored as fields between the update and the throw.
+4. **G1 field scoping**: `long_term_gc_time_ratio` and `free_space_percent` are locals inside `update_gc_overhead_counter()` and out of scope at the throw point (line 1109). Re-read them at the JFR emission site: `_policy->analytics()->long_term_gc_time_ratio()` and `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())`. Parallel GC does not have this issue — `_size_policy` is a class member accessible throughout `ParallelScavengeHeap`.
 
 ---
 
@@ -745,7 +746,7 @@ Timing: after concurrent marking, before CSet finalization.
 
 **Thread**: Shenandoah control thread (within collection preparation phase, before evacuation).
 
-**Algorithm**: `compute_tenuring_threshold()` uses mortality rate analysis — reciprocal of survival ratio across age cohorts, weighted by max-cohort-ratio; clamped to `[ShenandoahGenerationalMinTenuringAge, ShenandoahGenerationalMaxTenuringAge]`.
+**Algorithm**: `compute_tenuring_threshold()` scans from oldest cohort down to youngest. For each cohort at age `i`, it computes `mortality_rate = (prev_pop - cur_pop) / prev_pop`. If the cohort has sufficient population (> `ShenandoahGenerationalTenuringCohortPopulationThreshold`) **and** mortality rate > `ShenandoahGenerationalTenuringMortalityRateThreshold`, it returns `i + 1` as the threshold (keep that cohort in young one more cycle). If `ShenandoahGenerationalCensusIgnoreOlderCohorts` is set, the scan only goes up to the previous cycle's threshold (to avoid promotion artifacts distorting the count). Result clamped to `[ShenandoahGenerationalMinTenuringAge, ShenandoahGenerationalMaxTenuringAge]`.
 
 **Source** ([`shenandoahAgeCensus.cpp:264-326`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahAgeCensus.cpp#L264)):
 
