@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 38)
+**Last updated**: 2026-08-18 (pass 39)
 
 ---
 
@@ -433,7 +433,8 @@ void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
 | `gcuPercent` | GC utilization 0–100 — `_most_recent_gcu * 100` where `_most_recent_gcu = gc_time / (_active_processors * gc_cycle_period)`. `_active_processors` is fixed at JVM initialization via `os::initial_active_processor_count()` (line 182) — it does NOT update if CPU affinity changes after JVM start. | No | **Primary metric**: high `gcuPercent` means GC is consuming a large fraction of CPU time. Compare against SLA: e.g., `gcuPercent > 20%` might violate a throughput target. Note: in containers where CPU quotas are adjusted post-startup, the denominator may be stale |
 | `muPercent` | Mutator utilization 0–100 — `_most_recent_mu * 100` from `update_utilization()`, independently measured from GC thread CPU time; **not** simply `100 - gcuPercent`. Both fractions are measured against `_active_processors × gc_cycle_period` — on a 16-core machine running at 50% load, both GCU and MU can be < 50%. MU can briefly exceed 100% if CPU measurement windows are coarse | No | If `muPercent + gcuPercent < 100`, remaining CPU capacity is neither mutator nor GC work (I/O, sleep, other processes) |
 | `periodSeconds` | `gc_cycle_period = current - _most_recent_timestamp` — wall-clock elapsed since the **previous call to `update_utilization()`**, not the GC phase duration. On normal cycles this approximates the inter-GC interval. | No | Context for interpreting `gcuPercent` and `muPercent`: a short period (e.g. 50ms young GC every 100ms) vs. a long period (e.g. 2s global GC every 3s) yield different absolute CPU times even at the same GCU%. Absolute GC CPU time = `gcuPercent × periodSeconds × active_processors / 100` |
-| `isPeriodicSample` | `true` when emitted from `report()` periodic path | No | Distinguishes end-of-cycle measurements (high accuracy) from periodic snapshots (interpolated); for initial proposal this is always `false` |
+
+**DROPPED field**: `isPeriodicSample` — removed from initial proposal since the periodic `report()` path is `log_debug` and excluded (see open question 1).
 
 #### What it is used for
 
@@ -464,7 +465,7 @@ For concurrent collectors like Shenandoah, traditional pause-time metrics underc
 
 #### Open questions / upstream concerns
 
-1. Should `isPeriodicSample=true` events be dropped entirely? The `report()` function is log_debug, and exposing debug-tier data in a production JFR event requires justification. The end-of-cycle path alone is the clean proposal.
+1. **Resolved**: Drop the `isPeriodicSample=true` path from the initial proposal. `report()` at [`shenandoahMmuTracker.cpp:156`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L156) is `log_debug(gc)` — the periodic snapshot is debug-tier data. The initial proposal should cover only the end-of-cycle `update_utilization()` path (info-level). The `isPeriodicSample` field can be dropped from the initial event definition.
 2. **Resolved**: `gcId` from `_most_recent_gcid` is reliable. The `gcid` parameter is passed by each `record_*` caller at cycle end: `record_young(gcid)`, `record_global(gcid)`, `record_full(gcid)`, etc. — see [`shenandoahMmuTracker.cpp:112-153`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L112). The value is set to the ID of the collection that just completed, not a stale value from a prior cycle. Note: `record_old_marking_increment()` deliberately does NOT call `update_utilization()` — old-marking increments are rolled up into the next full-cycle report.
 3. Should the event merge with `jdk.ShenandoahCollectionDecision`? No: they fire at opposite ends of the GC cycle (start vs. end) and carry non-overlapping fields.
 
@@ -876,7 +877,7 @@ The Shenandoah algorithm uses mortality-rate analysis (`compute_tenuring_thresho
 #### Open questions / upstream concerns
 
 1. Should algorithm input fields (mortality rate, dark matter fraction) be included? Currently excluded because they are exposed only at `log_debug` level. Could be added in a follow-up that promotes those fields to `log_info`.
-2. Is `gcId` the right correlation key, or should this event correlate by timestamp with `jdk.ShenandoahCollectionDecision`?
+2. **Resolved**: `gcId` is the right correlation key. `GCIdMark gc_id_mark` is set in `service_concurrent_normal_cycle()` at [`shenandoahGenerationalControlThread.cpp:248`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L248), before `prepare_regions_and_collection_set()` is called. `GCId::current()` returns the current young collection's ID at `update_tenuring_threshold()` time — the same ID as the `jdk.GarbageCollection` and `jdk.ShenandoahCollectionDecision` events for the same cycle.
 
 ---
 
@@ -1303,7 +1304,7 @@ Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](ht
 #### Open questions / upstream concerns
 
 1. Same debug-level question as `jdk.G1ConcurrentRefinementSweep`.
-2. Should `predictedPendingCards` be dropped? It is a model estimate that may confuse rather than inform.
+2. **Resolved**: keep `predictedPendingCards`. Source: `_predicted_cards_at_next_gc = num_cards + incoming_rate × predicted_time_until_next_gc` at [`g1ConcurrentRefineThreadsNeeded.cpp:64`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefineThreadsNeeded.cpp#L64). This is the **projected backlog at the next GC** — the number the `adjust_threads_wanted()` algorithm is trying to get below `pendingCardsTarget`. It is actionable: if `predictedPendingCards` consistently exceeds `pendingCardsTarget` even when `threadsWanted` is at max, the refinement system cannot keep up regardless of thread count, and the only fix is workload reduction or write-barrier profile change.
 3. **Two emission points with different field shapes**: the GC-pause path (`record_young_collection_end()`) does not provide `threadsWanted`, `pendingCardsFromGC`, `predictedRefineRate`, or `dirtiedCardRate` — those are only available from the periodic `adjust_threads_wanted()` path. The simplest approach: emit the event only from the periodic path (where all fields are available), and accept that the GC-pause-aligned data is not captured. Alternatively, emit from the GC-pause path for `exceededGoal` and `pendingCardsTimeMs`, and from the periodic path for the rest, marking GC-path-only fields nullable when emitted periodically.
 
 ---
