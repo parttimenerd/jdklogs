@@ -509,14 +509,39 @@ GC STW thread
 
 **Thread**: GC STW thread.
 
-**Exact evaluation logic** (from [`shenandoahMetrics.cpp:38-90`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp#L38)):
+**Exact evaluation logic** ([`shenandoahMetrics.cpp:38-90`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp#L38)):
 
-```
-1. free_space check:  if fails → return false immediately (hard gate)
-2. used_space check:  if passes → return true (short-circuit success)
-3. internal_frag check: if passes → return true
-4. external_frag check: if passes → return true
-5. if none of 2–4 passed → return false
+```cpp
+// shenandoahMetrics.cpp:38
+bool ShenandoahMetricsSnapshot::is_good_progress() const {
+  const size_t free_actual = _free_set->available();
+  const size_t free_expected = (soft_max_capacity / 100) * ShenandoahCriticalFreeThreshold;
+  const bool prog_free = free_actual >= free_expected;
+  log_info(gc, ergo)("%s progress for free space: ...", prog_free ? "Good" : "Bad", ...);
+  if (!prog_free) {
+    return false;           // Hard gate: no further evaluation
+  }
+
+  const size_t progress_actual = (_used_before > used_after) ? _used_before - used_after : 0;
+  const size_t progress_expected = ShenandoahHeapRegion::region_size_bytes();
+  const bool prog_used = progress_actual >= progress_expected;
+  log_info(gc, ergo)("%s progress for used space: ...", prog_used ? "Good" : "Bad", ...);
+  if (prog_used) { return true; }   // Short-circuit success
+
+  const double if_actual = _if_before - _free_set->internal_fragmentation();
+  const double if_expected = 0.01;  // 1%
+  const bool prog_if = if_actual >= if_expected;
+  log_info(gc, ergo)("%s progress for internal fragmentation: ...", prog_if ? "Good" : "Bad", ...);
+  if (prog_if) { return true; }     // Short-circuit success
+
+  const double ef_actual = _ef_before - _free_set->external_fragmentation();
+  const double ef_expected = 0.01;  // 1%
+  const bool prog_ef = ef_actual >= ef_expected;
+  log_info(gc, ergo)("%s progress for external fragmentation: ...", prog_ef ? "Good" : "Bad", ...);
+  if (prog_ef) { return true; }     // Short-circuit success
+
+  return false;   // Free passed but none of used/if/ef showed improvement
+}
 ```
 
 Free space (`free_actual >= free_expected`) is a **hard prerequisite** — if it fails, no further dimensions are checked and the function immediately returns `false`. If free space passes, the function returns `true` on the first of used_space, internal_frag, or external_frag that passes. Only if all three subsequent dimensions also fail does the function return `false`.
@@ -617,6 +642,33 @@ Timing: after concurrent marking, before CSet finalization.
 
 **Algorithm**: `compute_tenuring_threshold()` uses mortality rate analysis — reciprocal of survival ratio across age cohorts, weighted by max-cohort-ratio; clamped to `[ShenandoahGenerationalMinTenuringAge, ShenandoahGenerationalMaxTenuringAge]`.
 
+**Source** ([`shenandoahAgeCensus.cpp:264-326`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahAgeCensus.cpp#L264)):
+
+```cpp
+// Starting from the oldest age cohort, scan down to find the oldest age
+// with HIGH mortality. The tenuring threshold = that age + 1, meaning:
+// objects that are "about to die" are kept in young gen one more cycle.
+uint tenuring_threshold = upper_bound;  // default: max age (retain all in young)
+for (uint i = upper_bound; i >= lower_bound; i--) {
+  const size_t cur_pop  = cur_pv->sizes[i];    // objects of age i this cycle
+  const size_t prev_pop = prev_pv->sizes[i-1]; // objects of age i-1 last cycle
+  const double mr = mortality_rate(prev_pop, cur_pop);  // fraction that died
+  if (prev_pop > ShenandoahGenerationalTenuringCohortPopulationThreshold
+      && mr > ShenandoahGenerationalTenuringMortalityRateThreshold) {
+    // This is the oldest cohort with high mortality.
+    // Return age+1 so we do NOT prematurely promote this cohort.
+    return i + 1;
+  }
+  tenuring_threshold = i;  // This cohort should be tenured (promote at this age)
+}
+return tenuring_threshold;  // clamped to [min, max]
+
+// mortality_rate: (prev_pop - cur_pop) / prev_pop
+// Returns 0.0 when cur_pop >= prev_pop ("dark matter" — objects that reappear)
+```
+
+**Interpretation**: A high mortality rate at age N means objects dying at that age — those objects do NOT need to graduate to old gen. A low mortality rate (survivors) → promote them. The threshold is set one above the oldest high-mortality cohort so that cohort gets one more young cycle before a promotion decision is made.
+
 #### Fields
 
 | Field | Source | Nullable? | Tuning use |
@@ -685,6 +737,51 @@ Timing: after `selector.select()` produces liveness data, before `_relocation_se
 1. **"Promote All"**: `promote_all` flag is set; `_tenuring_threshold = 0`; all objects promoted to old gen.
 2. **"ZTenuringThreshold"**: user-pinned via `-XX:ZTenuringThreshold=N`; static value, no computation.
 3. **"Computed"**: dynamic — `young_life_decay_factor × young_log_residency`, clamped to `[1, min(last_populated_age+1, MaxTenuringThreshold)]`.
+
+**Selection logic** ([`zGeneration.cpp:704-716`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zGeneration.cpp#L704)):
+
+```cpp
+// zGeneration.cpp:704
+void ZGenerationYoung::select_tenuring_threshold(ZRelocationSetSelectorStats stats, bool promote_all) {
+  const char* reason = "";
+  if (promote_all) {
+    _tenuring_threshold = 0;        // Emergency: flush all young objects to old gen
+    reason = "Promote All";
+  } else if (ZTenuringThreshold != -1) {
+    _tenuring_threshold = static_cast<uint>(ZTenuringThreshold);  // Admin override
+    reason = "ZTenuringThreshold";
+  } else {
+    _tenuring_threshold = compute_tenuring_threshold(stats);      // Dynamic algorithm
+    reason = "Computed";
+  }
+  log_info(gc, reloc)("Using tenuring threshold: %d (%s)", _tenuring_threshold, reason);
+}
+```
+
+**The `"Computed"` algorithm** ([`zGeneration.cpp:719-816`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zGeneration.cpp#L719)):
+
+```cpp
+// Life expectancy: ratio of live bytes at age N+1 to age N, averaged across all ages.
+// Values < 1 = generational behaviour (objects die young). Values ≥ 1 = anti-generational.
+const double young_life_decay_factor = 1.0 / young_life_expectancy;
+
+// Residency reciprocal: how small the young generation is relative to the heap.
+// Small young gen → high factor → push threshold up (less benefit from promoting).
+const double young_residency_reciprocal = double(soft_max_capacity) / double(young_live_total);
+const double young_residency_factor = MAX2(young_residency_reciprocal, 1.0);
+
+// Allocation pressure: ratio of new allocations to garbage collected.
+// High ratio = GC struggling to keep up → use larger log base → reduce threshold (more promotions).
+const double allocated_garbage_ratio = double(young_allocated) / double(young_garbage + 1);
+const double young_log = MAX2(MIN2(allocated_garbage_ratio, 1.0) * 16, 2.0);  // log base in [2,16]
+const double young_log_residency = log(young_residency_factor) / log(young_log);
+
+// Final threshold = decay × log-residency, rounded and clamped.
+const double tenuring_threshold_raw = young_life_decay_factor * young_log_residency;
+const uint tenuring_threshold = clamp((uint)round(tenuring_threshold_raw), lower_bound, upper_bound);
+```
+
+**Interpretation**: a workload with strong generational behaviour (objects die young → high `young_life_decay_factor`) and a small young gen relative to the heap (high `young_residency_factor`) gets a **high** threshold — fewer premature promotions. A workload where the GC is struggling to keep up (high `allocated_garbage_ratio`) gets a **lower** threshold — more promotions to reduce young-gen load.
 
 #### Fields
 
@@ -1014,6 +1111,35 @@ log_debug(gc, ergo, cset)("Start adding retained candidates to collection set. "
 
 Log tag: `log_debug(gc,ergo,cset)` at all sites.
 
+**Stop reason source** ([`g1CollectionSet.cpp:399-518`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L399)):
+
+```cpp
+// g1CollectionSet.cpp:399
+static void print_finish_message(const char* reason, bool from_marking) {
+  log_debug(gc, ergo, cset)("Finish adding %s candidates to collection set (%s).",
+                            from_marking ? "marking" : "retained", reason);
+}
+
+// In select_candidates_from_marking():
+// per-group loop:
+if (num_regions_added >= max_old_cset_length) {
+  print_finish_message("Maximum number of regions reached", true);   // stopReason #1
+  break;
+}
+if (num_regions_added >= min_old_cset_length && time_remaining_ms == 0) {
+  print_finish_message("Region amount reached min", true);           // stopReason #2
+  break;
+}
+if (time_remaining_ms == 0) {
+  print_finish_message("Predicted time too high", true);             // stopReason #3
+  break;
+}
+// (after loop if no break triggered:)
+log_debug(gc, ergo, cset)("Marking candidates exhausted.");         // stopReason #4
+```
+
+`num_expensive_regions` counts groups added when `time_remaining_ms == 0` but below `min_old_cset_length` — these are the `overBudgetRegions`.
+
 **Call chain**:
 ```
 GC pause thread (during CSet finalization, before evacuation)
@@ -1090,6 +1216,30 @@ The size delta is computable from `jdk.G1HeapSummary` events before and after a 
 [`g1HeapSizingPolicy.cpp:216`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L216)  
 Three `log_resize()` calls at lines 302, 319, 337.  
 Also: `young_collection_shrink_amount()` at [`g1HeapSizingPolicy.cpp:172`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L172).
+
+**Sigmoid scaling function** ([`g1HeapSizingPolicy.cpp:97-135`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L97)):
+
+```cpp
+// g1HeapSizingPolicy.cpp:97
+// Logistic function, returns values in the range [0,1]
+static double sigmoid_function(double value) {
+  double inflection_point = 1.0; // 100% deviation from target
+  double steepness = 6.0;
+  return 1.0 / (1.0 + exp(-steepness * (value - inflection_point)));
+}
+
+double G1HeapSizingPolicy::scale_cpu_usage_delta(
+    double cpu_usage_delta, double min_scale_factor, double max_scale_factor) const {
+  double sigmoid = sigmoid_function(cpu_usage_delta);
+  double scale_factor = min_scale_factor + (max_scale_factor - min_scale_factor) * sigmoid;
+  return scale_factor;
+}
+
+// For shrink: min_scale_factor from G1ShrinkByPercentOfAvailable, max from 2x that.
+// scaleFactorPct = scale_cpu_usage_delta(cpu_usage_delta, min, max) * 100
+```
+
+The sigmoid inflection at `cpu_usage_delta=1.0` (100% deviation from target) means: small deviations produce near-minimum scaling (conservative), deviations at 100%+ produce near-maximum scaling (aggressive). At steepness=6.0, the transition is sharp near 1.0 but not a step function.
 
 **Exact log message** via `log_resize()` ([`g1HeapSizingPolicy.cpp:82`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L82)):
 ```
@@ -1196,6 +1346,33 @@ ZGC director thread
 
 **Early-exit**: `start_gc()` ([`zDirector.cpp:820`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L820)) evaluates major first, then minor only if major did not trigger. If a major rule fires, minor rules are never evaluated. Within each direction, `make_minor/major_gc_decision` returns on the first triggered rule. So per tick: at most ONE rule fires total (either one major, or one minor — never both).
 
+**Source** ([`zDirector.cpp:820-841`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp#L820)):
+
+```cpp
+static bool start_gc(const ZDirectorStats& stats) {
+  // Try start major collections first as they include a minor collection
+  const GCCause::Cause major_cause = make_major_gc_decision(stats);
+  if (major_cause != GCCause::_no_gc) {
+    start_major_gc(stats, major_cause);
+    return true;   // Minor rules never evaluated
+  }
+
+  const GCCause::Cause minor_cause = make_minor_gc_decision(stats);
+  if (minor_cause != GCCause::_no_gc) {
+    if (!ZDriver::major()->is_busy() && rule_major_allocation_rate(stats)) {
+      start_major_gc(stats, GCCause::_z_allocation_rate);  // Minor pressure escalated to major
+    } else {
+      start_minor_gc(stats, minor_cause);
+    }
+    return true;
+  }
+
+  return false;   // No rule triggered this tick
+}
+```
+
+The `triggeredMajorRule` and `triggeredMinorRule` fields in the recommended redesign correspond directly to `major_cause` and `minor_cause` here. Both are available in `start_gc()` — a clean single emission point.
+
 Log tag: `log_debug(gc,director)` — ALL rule log sites in `zDirector.cpp`. There is no `log_info` in the entire file.
 
 **Cadence**: Every director tick (~1s default).
@@ -1299,7 +1476,46 @@ log_debug(gc, ergo)("Desired size eden: %zu K, survivor: %zu K",
 
 Log tag: `log_debug(gc,ergo)` — ALL sites are debug level.
 
-**Call chain**:
+**Eden sizing decision tree** ([`psAdaptiveSizePolicy.cpp:86-149`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp#L86)):
+
+```cpp
+// psAdaptiveSizePolicy.cpp:86
+size_t PSAdaptiveSizePolicy::compute_desired_eden_size(bool is_survivor_overflowing, size_t cur_eden) {
+  const double throughput_goal = 1.0 - (1.0 / (1.0 + GCTimeRatio));  // e.g. GCTimeRatio=4 → goal=0.80
+
+  if (mutator_time_percent() < throughput_goal) {
+    // Branch 1: THROUGHPUT BELOW GOAL → grow eden
+    // new_eden = min(expected_gc_distance/gc_distance * cur_eden, increase_eden(cur_eden))
+    log_debug(gc, ergo)("Adaptive: throughput (actual vs goal): %.3f vs %.3f ; eden delta: + %zu K", ...);
+    return new_eden;  // larger than cur_eden
+  }
+
+  if (minor_gc_time_estimate() > gc_pause_goal_sec()) {
+    // Branch 2: PAUSE EXCEEDS GOAL → shrink eden to reduce GC pause time
+    log_debug(gc, ergo)("Adaptive: pause (ms) (actual vs goal): %.1f vs %.1f", ...);
+    return decrease_eden_for_minor_pause_time(cur_eden);  // smaller than cur_eden
+  }
+
+  if (gc_distance < min_gc_distance) {
+    // Branch 3: GC FREQUENCY TOO HIGH → grow eden (less frequent GC needed)
+    log_debug(gc, ergo)("Adaptive: gc-distance (predicted vs goal): %.3f vs %.3f", ...);
+    return new_eden;  // larger than cur_eden
+  }
+
+  if (!is_survivor_overflowing && promoted_bytes_estimate() < 1*K) {
+    if (predicted_gc_distance > gc_distance_target) {
+      // Branch 4: SHRINK GC DISTANCE → shrink eden slightly to prevent GC from becoming too rare
+      log_debug(gc, ergo)("Adaptive: shrinking gc-distance (predicted vs threshold): %.3f vs %.3f", ...);
+      return cur_eden - delta;  // slightly smaller
+    }
+  }
+
+  log_debug(gc, ergo)("Adaptive: eden unchanged");
+  return cur_eden;  // no change
+}
+```
+
+The first branch that matches wins. The `throughputEdenIncrease` field (see Fields table) captures the eden delta when Branch 1 fires; it is null for all other branches.
 ```
 GC pause thread (within PSScavenge::invoke)
   → PSScavenge::invoke()   [psScavenge.cpp:305](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psScavenge.cpp#L305)
