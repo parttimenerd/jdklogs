@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 37)
+**Last updated**: 2026-08-18 (pass 38)
 
 ---
 
@@ -201,8 +201,8 @@ Container environments running glibc suffer from well-documented RSS bloat (see 
 #### Open questions / upstream concerns
 
 1. Will upstream accept the `os::trim_native_heap()` call-site change to decouple from `logging_enabled`? This is the crux. The patch is small but touches a hot path.
-2. Should `deltaBytes` be signed (negative = memory returned) or should the event expose `freedBytes` as an unsigned value with an `expanded` boolean? The signed design is more informative but unusual in JFR fields.
-3. Should `trimCount` be cumulative or per-event (always 1)? Cumulative is more useful for detecting missed events in continuous recordings.
+2. **Resolved**: `deltaBytes` as a signed `long` (JFR native type) is the right design. The underlying `os::size_change_t` has unsigned `before`/`after` fields; `deltaBytes = (long)afterBytes - (long)beforeBytes` is computable at emit time. JFR `long` is signed 64-bit, and the negative-means-returned convention is self-documenting. The `freedBytes + expanded_boolean` alternative adds a field without adding information — both `beforeBytes` and `afterBytes` are already in the event.
+3. **Resolved**: `_num_trims_performed` is cumulative from JVM initialization (initialized to 0 in the constructor at [`trimNativeHeap.cpp:169`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/trimNativeHeap.cpp#L169), incremented at line 144). The field is cumulative — monotonically increasing since JVM start. Gaps in a continuous JFR recording where `trimCount` jumps by more than expected indicate missed events (buffer overflow or JFR disabled periods).
 
 ---
 
@@ -430,9 +430,9 @@ void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
 | `startTime` | Standard JFR | No | Timestamp of GC phase completion |
 | `gcId` | `_most_recent_gcid` — GC ID of the collection that updated the MMU tracker | No | Correlate with `jdk.GarbageCollection` |
 | `phase` | `"Concurrent Young GC"`, `"Concurrent Global GC"`, `"Concurrent Bootstrap GC"`, `"Mixed Concurrent GC"`, `"Full GC"`, `"Degenerated Young GC"`, `"Degenerated Global GC"`, `"Degenerated Bootstrap Old GC"` — exact strings from `update_utilization()` callers in [`shenandoahMmuTracker.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp) and [`shenandoahDegeneratedGC.cpp:61`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahDegeneratedGC.cpp#L61) | Yes (null for periodic path if added later) | Compare GCU% across phases: Full GC and degenerated GC typically have higher GCU% than concurrent |
-| `gcuPercent` | GC utilization 0–100 — fraction of elapsed wall-clock time spent doing GC work | No | **Primary metric**: high `gcuPercent` means GC is consuming a large fraction of CPU time. Compare against SLA: e.g., `gcuPercent > 20%` might violate a throughput target |
-| `muPercent` | Mutator utilization 0–100 — `_most_recent_mu * 100` from `update_utilization()`, independently measured from GC thread CPU time; **not** simply `100 - gcuPercent`. Both fractions are measured against `active_processors × gc_cycle_period` — on a 16-core machine running at 50% load, both GCU and MU can be < 50%. MU can briefly exceed 100% if CPU measurement windows are coarse | No | If `muPercent + gcuPercent < 100`, remaining CPU capacity is neither mutator nor GC work (I/O, sleep, other processes) |
-| `periodSeconds` | Measurement window duration in seconds — wall-clock time of the GC phase or sampling interval | No | Context for interpreting `gcuPercent` and `muPercent`: a short phase (e.g. 50ms young GC) vs. a long phase (e.g. 2s global GC) produce comparable percentages; absolute CPU time = `gcuPercent × periodSeconds × active_processors / 100` |
+| `gcuPercent` | GC utilization 0–100 — `_most_recent_gcu * 100` where `_most_recent_gcu = gc_time / (_active_processors * gc_cycle_period)`. `_active_processors` is fixed at JVM initialization via `os::initial_active_processor_count()` (line 182) — it does NOT update if CPU affinity changes after JVM start. | No | **Primary metric**: high `gcuPercent` means GC is consuming a large fraction of CPU time. Compare against SLA: e.g., `gcuPercent > 20%` might violate a throughput target. Note: in containers where CPU quotas are adjusted post-startup, the denominator may be stale |
+| `muPercent` | Mutator utilization 0–100 — `_most_recent_mu * 100` from `update_utilization()`, independently measured from GC thread CPU time; **not** simply `100 - gcuPercent`. Both fractions are measured against `_active_processors × gc_cycle_period` — on a 16-core machine running at 50% load, both GCU and MU can be < 50%. MU can briefly exceed 100% if CPU measurement windows are coarse | No | If `muPercent + gcuPercent < 100`, remaining CPU capacity is neither mutator nor GC work (I/O, sleep, other processes) |
+| `periodSeconds` | `gc_cycle_period = current - _most_recent_timestamp` — wall-clock elapsed since the **previous call to `update_utilization()`**, not the GC phase duration. On normal cycles this approximates the inter-GC interval. | No | Context for interpreting `gcuPercent` and `muPercent`: a short period (e.g. 50ms young GC every 100ms) vs. a long period (e.g. 2s global GC every 3s) yield different absolute CPU times even at the same GCU%. Absolute GC CPU time = `gcuPercent × periodSeconds × active_processors / 100` |
 | `isPeriodicSample` | `true` when emitted from `report()` periodic path | No | Distinguishes end-of-cycle measurements (high accuracy) from periodic snapshots (interpolated); for initial proposal this is always `false` |
 
 #### What it is used for
@@ -465,7 +465,7 @@ For concurrent collectors like Shenandoah, traditional pause-time metrics underc
 #### Open questions / upstream concerns
 
 1. Should `isPeriodicSample=true` events be dropped entirely? The `report()` function is log_debug, and exposing debug-tier data in a production JFR event requires justification. The end-of-cycle path alone is the clean proposal.
-2. Is `gcId` from `_most_recent_gcid` reliable at the end-of-cycle emission point? If the control thread updates `_most_recent_gcid` at the start of a cycle, the end-of-cycle value correctly identifies the completed cycle.
+2. **Resolved**: `gcId` from `_most_recent_gcid` is reliable. The `gcid` parameter is passed by each `record_*` caller at cycle end: `record_young(gcid)`, `record_global(gcid)`, `record_full(gcid)`, etc. — see [`shenandoahMmuTracker.cpp:112-153`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L112). The value is set to the ID of the collection that just completed, not a stale value from a prior cycle. Note: `record_old_marking_increment()` deliberately does NOT call `update_utilization()` — old-marking increments are rolled up into the next full-cycle report.
 3. Should the event merge with `jdk.ShenandoahCollectionDecision`? No: they fire at opposite ends of the GC cycle (start vs. end) and carry non-overlapping fields.
 
 ---
@@ -1016,7 +1016,7 @@ Different algorithms (mortality rate analysis vs. life decay factor), different 
 
 1. **Preferred approach is field extension, not new event**: `jdk.ZYoungGarbageCollection` already carries `tenuringThreshold`. Adding a `tenuringThresholdReason` field (`"Promote All"` / `"ZTenuringThreshold"` / `"Computed"`) to that event is a smaller change and avoids duplicating the threshold value. The standalone event should only be proposed if the timing difference (selection phase vs. collection end) is also valuable.
 2. Should `reason="Computed"` be supplemented with the 3 intermediate values (`lifeDecayFactor`, `youngLogResidency`, `allocatedGarbageRatio`)? Currently excluded because they are at `log_debug` level. Could be added in a follow-up.
-3. Is `gcId` reliably set when `select_tenuring_threshold()` fires? The call is inside `select_relocation_set()`, which is a concurrent phase — the GC ID should be set at the start of the young collection.
+3. **Resolved**: `gcId` is reliable at `select_tenuring_threshold()` call time. The `GCIdMark _gc_id` field is initialized in `ZDriverScopeMinor` at [`zDriver.cpp:169`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDriver.cpp#L169), which is constructed before `ZGenerationYoung::collect()` is called. The mark is in scope for the entire minor collection including the concurrent select phase — `GCId::current()` is valid and returns the current young collection's ID.
 
 ---
 
@@ -1562,7 +1562,7 @@ Fires at end of every young GC pause.
 | `lowerThresholdPct` | `gc_cpu_usage_target * (1 - G1CPUUsageDeviationPercent/100)` where `gc_cpu_usage_target = 1/(1+GCTimeRatio)` (scaled by heap fill ratio) | No | Below this → shrink candidate. Example: `GCTimeRatio=24` → target=4%; `G1CPUUsageDeviationPercent=25` → lower=3%. If GC CPU consistently stays below 3%, heap is oversized for this workload. |
 | `upperThresholdPct` | `gc_cpu_usage_target * (1 + G1CPUUsageDeviationPercent/100)` | No | Above this → expand candidate. Same example: upper=5%. If GC CPU exceeds 5% for 4+ consecutive pauses, G1 will try to grow the heap. |
 | `gcCpuUsageTargetPct` | `1.0 / (1.0 + GCTimeRatio)` × heap-scale factor; steady-state desired GC CPU fraction | No | The target the policy is aiming for. With `GCTimeRatio=24` (G1 default) this is 4% before heap scaling. `scale_with_heap()` reduces the target when committed heap ≤ half of max — meaning a small heap is allowed to run GC harder before expanding. |
-| `expand` | `true`=expand, `false`=shrink | Yes (null if `resizeBytes=0`) | Direction of resize |
+| `expand` | `true`=expand, `false`=shrink; only valid when `resizeBytes != 0` — `expand` is a reference parameter in `young_collection_resize_amount()` that is only assigned inside the expand (line 298) or shrink (line 316) branches; when neither fires it retains a stale value | Yes (null if `resizeBytes=0`) | Direction of resize; only meaningful when `resizeBytes > 0` |
 | `resizeBytes` | `young_collection_resize_amount()` return value; 0 = no resize triggered this pause | No | Size of resize in bytes; 0 on most pauses |
 | `atLimit` | Boolean: heap already at min/max capacity, so resize was requested but not possible | No | `true` + `expand=true` means heap needs to grow but `-Xmx` is the ceiling — increase max heap |
 | `scaleFactorPct` | From `young_collection_shrink_amount()` sigmoid scaling — accounts for how far GC CPU usage deviated | Yes (null on expansion path) | Higher scale factor → more aggressive shrink. Sigmoid-based: a 100% deviation doubles the scale |
@@ -1609,7 +1609,7 @@ This interacts with `jdk.G1HeapResize`'s `atLimit` field: when both `-Xmx` and p
 
 1. **Debug-level source**: same argument as for refinement events.
 2. **Shrink-path-only nullable fields**: `scaleFactorPct`, `freeRegions`, `regionsNeededForAlloc` are null on the expansion path. Upstream may want these separated into an expansion event and a shrink event.
-3. **Fires on no-resize**: should the event be gated on `resizeBytes != 0`? An event that fires every young GC (even when nothing changed) adds noise. Gate on non-zero unless the "no resize and why not" information is itself valuable.
+3. **Resolved**: the event should be gated on `resizeBytes != 0`. Source analysis: `young_collection_resize_amount()` uses a `bool& expand` reference parameter that is only assigned inside the expand (line 298) or shrink (line 316) branches. When neither branch fires, `expand` retains whatever stale value it had from a previous call — and the caller at [`g1CollectedHeap.cpp:988`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L988) already checks `if (resize_bytes != 0)` before using `expand`. Emitting the event only on `resizeBytes != 0` keeps `expand` well-defined and avoids per-pause noise.
 4. Should `gcCpuUsageTargetPct` be omitted since it is derivable from `GCTimeRatio` (available from `jdk.GCConfiguration`)? **Recommendation**: keep it. The `scale_with_heap()` function modifies the target when committed heap ≤ half of max capacity (`target *= capacity / (max_capacity/2)`, floored at 1%) — the effective target is *not* simply `1/(1+GCTimeRatio)` in that case. Without emitting the scaled value, operators cannot reason about why expansion triggered at a non-standard threshold.
 
 ---
@@ -1917,7 +1917,7 @@ These Oracle descriptions map directly to the event fields: `throughput` (mutato
 1. **Debug-level source**: all three emission points are `log_debug(gc,ergo)`. Same justification applies: the data is in the product build, and JFR provides production access without requiring debug log activation.
 2. **Three-source coordination — simpler than it looks**: `print_stats()` fires at `psScavenge.cpp:431`, then `resize_after_young_gc()` is called at line 432 and contains both `compute_desired_sizes()` and `compute_old_gen_shrink_bytes()` calls. A single JFR event emission at the end of `ParallelScavengeHeap::resize_after_young_gc()` can capture all fields from old-gen shrink and young-gen sizing in one place. The only field from `print_stats()` that needs to be read is the `throughput`/`minorPauseMs` from the policy object — those are available as accessor methods (`size_policy->mutator_time_percent()`, `size_policy->minor_gc_time_estimate()`) and can be called from within `resize_after_young_gc()` at emit time without any struct accumulation.
 3. **Recommended**: replace `throughputEdenIncrease` (nullable, branch-specific) with a non-null `edenSizingBranch` string field: `"throughput_grow"` (Branch 1: throughput below goal, grow eden) / `"pause_shrink"` (Branch 2: pause exceeded goal, shrink eden) / `"distance_grow"` (Branch 3: GC too frequent, grow eden) / `"distance_shrink"` (Branch 4: GC too rare, shrink eden slightly) / `"unchanged"` (no condition triggered). This eliminates the nullable field, captures which branch fired, and is more informative than the raw eden-delta amount (which is computable from `jdk.PSHeapSummary` diffs anyway).
-4. Is `gcDistanceSec` vs `gcDistanceSecLast` both needed, or is the smoothed average sufficient?
+4. **Resolved**: both `gcDistanceSec` and `gcDistanceSecLast` are needed. Source: `compute_desired_eden_size()` at [`psAdaptiveSizePolicy.cpp:88`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp#L88) uses `_gc_distance_seconds_seq.last()` (raw last value) as the decision variable `gc_distance` in Branches 3 and 4. The `.davg()` (exponentially-weighted average) is used only in the log statement at line 69. Both are needed: `.last()` is the actual branching input; `.davg()` shows the trend for detecting oscillation patterns.
 
 ---
 
