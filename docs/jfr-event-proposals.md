@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 33)
+**Last updated**: 2026-08-18 (pass 34)
 
 ---
 
@@ -1030,9 +1030,9 @@ Different algorithms (mortality rate analysis vs. life decay factor), different 
 
 #### The question it answers
 
-"How many nmethods does ZGC have registered, and how many stale slots are accumulating between table rebuilds?"
+"Is the ZGC nmethod table growing or accumulating stale entries, and how much scan overhead does it add to each collection?"
 
-Stale (`_nunregistered`) slots in the ZGC nmethod table indicate zombie entries that have been unregistered but not yet purged by a table rebuild. A high ratio of stale to registered nmethods can indicate that the table rebuild cadence is insufficient.
+ZGC must scan all registered nmethods every collection to find object references in compiled code. The nmethod table is a ZGC-specific structure separate from the code cache; its size directly determines per-collection scan cost. Stale (`_nunregistered`) entries are unregistered nmethods whose table slots have not yet been reclaimed — they consume scan capacity without holding live references. No JFR event currently exposes this table's state.
 
 #### Emission point
 
@@ -1279,6 +1279,8 @@ G1 concurrent refinement control thread
 #### What it is used for
 
 Complements `jdk.G1ConcurrentRefinementSweep`: where Sweep shows per-sweep throughput, Policy shows the adaptive thread-count decision. Together they answer: "Is G1 adjusting the right number of refinement threads, and is the pending-card target realistic for this workload?"
+
+**Concrete scenario**: Suppose `dirtiedCardRate = 500 cards/ms` and `predictedRefineRate = 200 cards/ms` with `threadsWanted = 2`. Expected clearance = 200 × 2 = 400 cards/ms — less than the dirtied rate. `pendingCards` will grow each tick, eventually exceeding `pendingCardsTarget`. The residual backlog spills into the next GC pause for processing under the `G1RSetUpdatingPauseTimePercent` budget (default 10% of pause time). This event exposes the imbalance in real time; without it, the symptom is unexplained pause-time variance with no apparent cause in GC logs below `debug` level.
 
 **Key patterns**:
 - `threadsWanted` at maximum and `pendingCards > pendingCardsTarget` → more refinement capacity needed; consider `-XX:G1ConcRefinementThreads`.
@@ -1690,7 +1692,7 @@ Emit one event per director tick with ~6 fields. The `start_gc()` function at [`
 | Field | Source | Nullable? | Tuning use |
 |---|---|---|---|
 | `startTime` | Standard JFR | No | Tick frequency check |
-| `triggeredMinorRule` | `GCCause::Cause` name from `make_minor_gc_decision()` return — null if `_no_gc` or if major triggered (major preempts minor evaluation entirely) | Yes | Which pressure caused the minor GC: `"_z_timer"` (periodic), `"_z_allocation_rate"` (memory pressure), `"_z_high_usage"` (heap nearly full) |
+| `triggeredMinorRule` | `GCCause::Cause` name from `make_minor_gc_decision()` return — null if `_no_gc` **OR** if major triggered (major preempts minor evaluation entirely — minor is never evaluated when major fires). **Disambiguation**: null means either "evaluated, nothing triggered" or "not evaluated because major fired first" — these cases are indistinguishable from the minor field alone; use `triggeredMajorRule != null` to detect the preemption case. | Yes | Which pressure caused the minor GC: `"_z_timer"` (periodic), `"_z_allocation_rate"` (memory pressure), `"_z_high_usage"` (heap nearly full) |
 | `triggeredMajorRule` | `GCCause::Cause` name from `make_major_gc_decision()` return — null if `_no_gc`; evaluated first; if non-null, minor was never evaluated | Yes | `"_z_warmup"` (early startup), `"_z_proactive"` (idle cleanup), `"_z_allocation_rate"` (escalated from minor pressure), `"_z_timer"` |
 | `timeUntilMinorOOM` | From alloc-rate rule (`rule_minor_allocation_rate_dynamic`): `time_until_oom` computed from allocation rate model | Yes | Seconds until OOM at current allocation rate; null if alloc-rate rule was not evaluated. Low value = imminent allocation failure |
 | `minorFreeBytes` | Available young-gen bytes from alloc-rate/high-usage rules | Yes | Remaining headroom; compare against `ZAllocationSpikeTolerance` |
@@ -1736,7 +1738,6 @@ Oracle ZGC Tuning Guide — [ZGC](https://docs.oracle.com/en/java/javase/26/gctu
 1. **All-debug source**: `zDirector.cpp` has zero `log_info` sites. This is the hardest case to justify to upstream. The argument must be: "the director tick data is production-relevant, the current absence of any JFR signal for no-trigger ticks is an observability gap, and JFR's access model is independent of the log level."
 2. Should the event fire on ticks where no GC is triggered (both `triggeredMinorRule` and `triggeredMajorRule` null)? If yes, the event fires every second even during idle periods. Consider filtering to ticks where at least one rule fired.
 3. The per-tick summary design must be validated: does the information from individual rule functions flow up to a single place in `start_gc()` where all fields are available? The `start_gc()` function receives a `ZDirectorStats stats` argument — the individual rule functions also receive it. `minorFreeBytes` (from `is_high_usage()`) is computed from `stats._heap._used` and `stats._heap._soft_max_heap_size` which ARE part of `ZDirectorStats` and accessible at `start_gc()`. However, `timeUntilMinorOOM` is a local variable inside `rule_minor_allocation_rate_dynamic()` — it does NOT bubble up to `start_gc()`. A struct accumulation pattern is required only for `timeUntilMinorOOM`: each rule would populate a `ZDirectorRuleResult` struct, which `make_minor_gc_decision()` would return alongside the `GCCause::Cause` value. This is a non-trivial design change but is the correct approach for `timeUntilMinorOOM`; `minorFreeBytes` can be derived from the heap stats in `ZDirectorStats` directly.
-4. Correction to "both rules null" filtering (question 2): note that `triggeredMajorRule` non-null means minor was **never evaluated** — so a "major triggered" event genuinely has both `triggeredMinorRule=null` (not evaluated) and `triggeredMajorRule=<cause>`. A consumer must not interpret `triggeredMinorRule=null` as "minor evaluated, nothing triggered" — only as "either minor evaluated and did not trigger, or minor was not evaluated because major triggered first." This distinction should be documented in the event schema description.
 
 ---
 
@@ -1748,9 +1749,9 @@ Oracle ZGC Tuning Guide — [ZGC](https://docs.oracle.com/en/java/javase/26/gctu
 
 #### The question it answers
 
-"Why did Parallel GC resize eden, survivor, or old-gen this cycle?"
+"Why did Parallel GC resize eden, survivor, or old-gen this cycle, and is the adaptive policy converging or fighting itself?"
 
-`jdk.PSHeapSummary` and `jdk.GCHeapSummary` carry the resulting sizes. They do not carry the throughput and pause goals, the promotion model estimates, or the old-gen shrink calculation inputs that drove the sizing decision. This information is entirely invisible in JFR today.
+`jdk.PSHeapSummary` and `jdk.GCHeapSummary` carry the resulting sizes. They do not carry the throughput and pause goals, the promotion model estimates, or the old-gen shrink calculation inputs that drove the sizing decision. This information is entirely invisible in JFR today. Critically, you cannot detect the most problematic pattern — a policy that oscillates: eden grows to meet throughput, pauses exceed the goal, eden shrinks, throughput drops, repeat. Without the per-cycle decision inputs, this feedback loop looks identical to "heap is correctly sized" in existing JFR data.
 
 #### Emission points
 
