@@ -1046,7 +1046,7 @@ G1ConcurrentRefineThread control loop
 | `cardsClean` | `stats->cards_clean()` — cards already clean when scanned (no work needed) | No | High ratio of clean/scanned means cards are being re-queued unnecessarily; can indicate write barrier overhead without actual dirtying |
 | `cardsNotClean` | `stats->cards_not_clean()` — cards that required processing | No | The actual work done; `cardsNotClean / cardsScanned` = effective work ratio |
 | `cardsNotParsable` | `stats->cards_not_parsable()` — cards in mid-transition regions (skip) | Consider dropping | Low production diagnostic value; regions in mid-transition are rare |
-| `cardsNoCrossRegion` | `stats->cards_no_cross_region()` — cards filtered because reference is within same region | No | **Heap locality indicator**: high `cardsNoCrossRegion / cardsNotClean` = objects frequently reference their spatial neighbors — good locality reduces remembered-set pressure |
+| `cardsNoCrossRegion` | `stats->cards_no_cross_region()` — cards where the mutator changed all cross-region references AFTER dirtying the card, making the card a false dirty. From `G1RemSet::NoCrossRegion` result: [`g1RemSet.hpp:122`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1RemSet.hpp#L122) "There is no interesting reference in the card any more. The mutator changed all references to such after dirtying the card." | No | **Write churn indicator**: high ratio = mutators are dirtying cards and then immediately modifying the references to non-cross-region targets, generating wasted refinement work. A high value suggests short-lived cross-region pointer patterns (objects that are written and quickly overwritten) |
 | `cardsRefersToCset` | `stats->cards_refer_to_cset()` — cards pointing to CSet at scan time | Consider dropping | Intermediate value; `cardsStillRefersToCset` is the actionable metric |
 | `cardsStillRefersToCset` | `stats->cards_already_refer_to_cset()` — cards still pointing to CSet after refinement | No | Non-zero = cards that could not be processed because regions were already in CSet; high value may increase pause work |
 | `cardsPending` | `stats->cards_pending()` — backlog remaining after sweep | No | **Backlog indicator**: growing `cardsPending` across sweeps means refinement is not keeping up with the write rate |
@@ -1060,6 +1060,7 @@ G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pau
 - `cardsClean / cardsScanned` > 50% → many cards are being scanned redundantly; may indicate write barrier generating redundant marks.
 - `cardRefineMs` high relative to inter-GC interval → refinement consuming significant CPU; balance against application threads.
 - `cardsStillRefersToCset` non-zero frequently → consider adjusting CSet selection to reduce the number of regions in CSet that have pending references.
+- `cardsNoCrossRegion / cardsScanned` high → many cards were dirtied but the references already changed before refinement ran (write churn). These cards produced no useful work. This is a sign of short-lived cross-region pointer patterns — allocate-and-overwrite patterns common in producer/consumer workloads.
 
 #### Why existing events don't cover this
 
