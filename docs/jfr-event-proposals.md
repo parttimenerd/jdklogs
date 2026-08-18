@@ -1253,7 +1253,7 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 
 #### Verdict
 
-**Propose with caveats.** Debug-level source. Three source functions must be coordinated within one `PSScavenge::invoke()` call, which is implementable but adds complexity. The fields from `compute_old_gen_shrink_bytes()` and `compute_desired_sizes()` must be read and stored at their respective call sites and then emitted together.
+**Propose with caveats.** Debug-level source. The three-source coordination is simpler than it appears: `compute_desired_sizes()` and `compute_old_gen_shrink_bytes()` both execute within `ParallelScavengeHeap::resize_after_young_gc()` and the throughput/pause fields from `print_stats()` are accessible as policy accessor methods at the same call site. A single JFR event at the end of `resize_after_young_gc()` captures all fields without struct accumulation.
 
 #### The question it answers
 
@@ -1291,6 +1291,12 @@ log_debug(gc, ergo)("Adaptive: old-gen free bytes: %.0f M, min-free-bytes: %.1f 
 `PSYoungGen::compute_desired_sizes()`  
 [`psYoungGen.cpp:367`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psYoungGen.cpp#L367)
 
+**Exact log message** ([`psYoungGen.cpp:367`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psYoungGen.cpp#L367)):
+```
+log_debug(gc, ergo)("Desired size eden: %zu K, survivor: %zu K",
+    eden_size / K, survivor_size / K);
+```
+
 Log tag: `log_debug(gc,ergo)` — ALL sites are debug level.
 
 **Call chain**:
@@ -1298,9 +1304,14 @@ Log tag: `log_debug(gc,ergo)` — ALL sites are debug level.
 GC pause thread (within PSScavenge::invoke)
   → PSScavenge::invoke()   [psScavenge.cpp:305](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psScavenge.cpp#L305)
     → size_policy->print_stats(_survivor_overflow)   [psScavenge.cpp:431](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psScavenge.cpp#L431)
-    → (also within same invoke()) compute_old_gen_shrink_bytes()
-    → (also within same invoke()) PSYoungGen::compute_desired_sizes()
+    → heap->resize_after_young_gc()   [psScavenge.cpp:432](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psScavenge.cpp#L432)
+      → ParallelScavengeHeap::resize_after_young_gc()   [parallelScavengeHeap.cpp:889](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L889)
+        → PSYoungGen::resize_after_young_gc()   [psYoungGen.cpp:476](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psYoungGen.cpp#L476)
+          → compute_desired_sizes()   [psYoungGen.cpp:337](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psYoungGen.cpp#L337)
+        → size_policy->compute_old_gen_shrink_bytes()   [parallelScavengeHeap.cpp:906](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L906)
 ```
+
+**All three emission points are within the same `ParallelScavengeHeap::resize_after_young_gc()` call** (plus `print_stats` which is called immediately before it). A JFR event can be emitted at the end of `resize_after_young_gc()` with all fields in scope or passed down via struct.
 
 **Cadence**: Once per young GC collection.
 
@@ -1351,7 +1362,7 @@ Parallel GC's adaptive size policy implements a feedback control loop that resiz
 #### Open questions / upstream concerns
 
 1. **Debug-level source**: all three emission points are `log_debug(gc,ergo)`. Same justification applies: the data is in the product build, and JFR provides production access without requiring debug log activation.
-2. **Three-source coordination**: `desiredEden` and `desiredSurvivor` are from `PSYoungGen::compute_desired_sizes()`, which is a different call from `print_stats()`. The implementation must capture those values (e.g., store in a local struct) and emit them together. This is implementable within `PSScavenge::invoke()` but adds coordination complexity.
+2. **Three-source coordination — simpler than it looks**: `print_stats()` fires at `psScavenge.cpp:431`, then `resize_after_young_gc()` is called at line 432 and contains both `compute_desired_sizes()` and `compute_old_gen_shrink_bytes()` calls. A single JFR event emission at the end of `ParallelScavengeHeap::resize_after_young_gc()` can capture all fields from old-gen shrink and young-gen sizing in one place. The only field from `print_stats()` that needs to be read is the `throughput`/`minorPauseMs` from the policy object — those are available as accessor methods (`size_policy->mutator_time_percent()`, `size_policy->minor_gc_time_estimate()`) and can be called from within `resize_after_young_gc()` at emit time without any struct accumulation.
 3. Should `throughputEdenIncrease` be dropped to eliminate the one nullable field? If the throughput-vs-pause-goal branching information is important, an alternative is to add a `sizingBranch` string field (`"throughput"` / `"pause"` / `"no_change"`) and drop the nullable branch-specific field.
 4. Is `gcDistanceSec` vs `gcDistanceSecLast` both needed, or is the smoothed average sufficient?
 
