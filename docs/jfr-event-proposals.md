@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-18 (pass 31)
+**Last updated**: 2026-08-18 (pass 32)
 
 ---
 
@@ -46,7 +46,7 @@ Events sourced from sites inside `#ifndef PRODUCT` guards are **blocked** — th
 | 4 | jdk.ShenandoahCollectionDecision | **Redesign first** | High | `log_info(gc,ergo)` / `log_info(gc)` | Shenandoah GC cycle start |
 | 5 | jdk.ShenandoahReclaimProgress | **Propose with caveats** | Medium | `log_info(gc,ergo)` | End of degenerated or full Shenandoah GC |
 | 6 | jdk.ShenandoahTenuringThreshold | **Propose** | Medium | `log_info(gc,age)` | Each Shenandoah young collection planning phase |
-| 7 | jdk.ZGCTenuringThreshold | **Propose** | Medium | `log_info(gc,reloc)` | Each ZGC young collection relocation-set selection |
+| 7 | jdk.ZGCTenuringThreshold | **Redesign first** | Medium | `log_info(gc,reloc)` | Each ZGC young collection relocation-set selection |
 | 8 | jdk.ZNMethodRegistration | **Propose with caveats** | Low | `log_info(gc,nmethod)` | End of each ZGC generation collection |
 | 9 | jdk.G1ConcurrentRefinementSweep | **Propose with caveats** | Medium | `log_debug(gc,refine)` | Each G1 refinement sweep completion |
 | 10 | jdk.G1ConcurrentRefinementPolicy | **Propose with caveats** | Medium | `log_debug(gc,refine)` | Each young GC pause end + periodic |
@@ -304,8 +304,9 @@ The JFR event fires at the `log_info` site. To access `long_term_gc_time_ratio` 
 
 #### Why existing events don't cover this
 
-- `jdk.OutOfMemoryError` (hypothetical): fires at the Java exception propagation level, not at the GC decision point. The GC state fields (`gcTimePercent`, `freeSpacePercent`) are not accessible from the Java level.
+- No `jdk.OutOfMemoryError` event exists in the JFR metadata — verified against `src/hotspot/share/jfr/metadata/metadata.xml`. The JVM does fire `jdk.JavaErrorThrow` but that is at the Java exception propagation level, after the OOM object is constructed, and carries no GC state fields.
 - `jdk.GCHeapSummary`, `jdk.G1HeapSummary`, `jdk.PSHeapSummary`: record heap sizes at GC events, not at the allocation failure → OOM decision moment.
+- `jdk.GCCPUTime` (G1/Parallel/Serial): records total GC CPU time per pause — does not expose the overhead counter, the violation threshold, or the per-GC-cycle rolling average that drives the `GCOverheadLimitExceeded` decision.
 - No existing JFR event captures the GC overhead limit violation counter or the decision to throw.
 
 #### What it is used for
@@ -449,6 +450,9 @@ void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
 #### Why existing events don't cover this
 
 - `jdk.G1MMU`: measures pause compliance in a fixed window (ms units, G1-specific). Structurally different from Shenandoah's GCU%/MU% fraction.
+- `jdk.GCCPUTime`: records GC CPU time per pause (user/system/real times). **Explicitly does not support Shenandoah** — the event description in `metadata.xml` reads "Supported: G1GC, ParallelGC and SerialGC". `GCTraceCPUTime` is never constructed in Shenandoah's GC path (`shenandoahConcurrentGC.cpp`, `shenandoahDegeneratedGC.cpp`, `shenandoahFullGC.cpp`). Even if it were, per-pause CPU time is structurally different from GCU% across an entire concurrent phase window.
+- `jdk.ShenandoahEvacuationInformation`: records collection-set region counts, used-before/after, free regions (from `shenandoahTrace.cpp:32`). No CPU utilization data.
+- `jdk.ShenandoahPromotionInformation`: records promotion counts by generation and region type. No CPU utilization data.
 - `jdk.GarbageCollection`, `jdk.ShenandoahHeapRegionStateChange`: record GC outcomes and region states; do not capture time-fraction breakdown between GC and mutator.
 - No Shenandoah-specific JFR event captures the MMU tracker data.
 
@@ -579,6 +583,8 @@ const char* ShenandoahGenerationalControlThread::gc_mode_name(GCMode mode) {
 
 #### Why existing events don't cover this
 
+- `jdk.ShenandoahEvacuationInformation`: fires during CSet selection; records collection-set region counts, used-before/after, free regions, and immediate-garbage regions. **No heuristic decision fields** — only the resulting CSet composition, not why GC was triggered or which generation was targeted.
+- `jdk.ShenandoahPromotionInformation`: records per-generation bytes collected and humongous/regular promotion breakdown. **No trigger or decision fields**.
 - `jdk.ShenandoahHeapRegionStateChange`: fires after regions change state; does not capture the heuristic decision at the start of a cycle.
 - `jdk.GCHeapSummary`: records heap sizes before/after GC; does not capture why GC was started.
 - `jdk.GarbageCollection`: records GC outcomes; the `cause` field exists but does not capture the rich heuristic reasoning (trigger type, rates, fragmentation metrics).
@@ -737,6 +743,8 @@ A degenerated GC is Shenandoah's first-tier fallback: when a concurrent GC fails
 #### Why existing events don't cover this
 
 - `jdk.ShenandoahCollectionDecision` (proposed): fires at the START of a cycle; `ReclaimProgress` fires at the END of a degenerated/full GC. They are not mergeable.
+- `jdk.ShenandoahEvacuationInformation`: records CSet regions, used-before/after, free regions — evacuation outcome metrics, not the progress assessment or escalation counter.
+- `jdk.ShenandoahPromotionInformation`: records promotion bytes per generation — no degeneration progress assessment.
 - `jdk.GarbageCollection`: records GC completion; does not expose the progress assessment or the escalation counter.
 - No existing JFR event exposes `_consecutive_degenerated_gcs_without_progress`.
 
@@ -851,6 +859,8 @@ Shenandoah computes this dynamically from mortality rates, so the threshold adap
 
 #### Why existing events don't cover this
 - `jdk.GarbageCollection`: records GC completion; no tenuring threshold field.
+- `jdk.ShenandoahPromotionInformation`: records bytes promoted by generation and region type — the outcome of promotion decisions; does not expose the tenuring threshold or the mortality-rate computation that determined it.
+- `jdk.TenuringDistribution` (G1/Parallel): records per-age object counts; exists only for G1 and Parallel GC, not Shenandoah. Even if it existed, it would not expose the computed threshold — only the distribution.
 - No existing JFR event covers Shenandoah-specific tenuring threshold computation.
 
 #### External references
@@ -876,13 +886,15 @@ The Shenandoah algorithm uses mortality-rate analysis (`compute_tenuring_thresho
 
 #### Verdict
 
-**Propose.** Info-level source, clean 4-field design, no nullable fields, single emission point. Ready to file. Do not merge with `jdk.ShenandoahTenuringThreshold` — different algorithm, different lifecycle position, different GC.
+**Redesign first.** `jdk.ZYoungGarbageCollection` already has a `tenuringThreshold` field (set to `ZGeneration::young()->tenuring_threshold()` in `zTracer.cpp:104`). The standalone event as designed is therefore partially redundant. The unique value this proposal adds is the `reason` field (`"Promote All"` / `"ZTenuringThreshold"` / `"Computed"`) — the existing event cannot distinguish these three selection paths. **The right upstream approach is to propose adding `reason` as a new field to `jdk.ZYoungGarbageCollection` rather than creating a new standalone event.** This is a smaller diff, avoids duplicating the threshold value, and will receive less friction.
+
+If the standalone event is proposed anyway (e.g., to capture timing relative to `select_relocation_set()` rather than at collection end), the redundancy with `jdk.ZYoungGarbageCollection.tenuringThreshold` must be explicitly addressed in the RFE.
 
 #### The question it answers
 
-"What tenuring threshold did ZGC select this young collection — was it user-pinned, forced, or dynamically computed?"
+"Why did ZGC select this tenuring threshold — was it user-pinned (`-XX:ZTenuringThreshold`), emergency-forced (`"Promote All"`), or dynamically computed?"
 
-`jdk.ZGCConfiguration` records the static `-XX:ZTenuringThreshold` flag value set at JVM startup. It does not record the per-cycle dynamic selection, which can differ from the static flag depending on the selection path. There is no existing JFR event for this.
+`jdk.ZYoungGarbageCollection` already records the per-cycle threshold value. The gap is the **selection reason**: without knowing whether the threshold came from a flag override, a `"Promote All"` emergency flush, or the dynamic algorithm, the threshold value alone cannot be interpreted correctly. A threshold of 1 could mean "strong allocation pressure drove the algorithm to 1" or "Promote All forced everything to promote immediately" — these require completely different responses.
 
 #### Emission point
 
@@ -982,9 +994,9 @@ const uint tenuring_threshold = clamp((uint)round(tenuring_threshold_raw), lower
 
 #### Why existing events don't cover this
 
-- `jdk.ZGCConfiguration`: records the static `-XX:ZTenuringThreshold` flag; not the per-cycle dynamic selection (which differs for `"Promote All"` and `"Computed"` paths).
-- `jdk.ZYoungGarbageCollection`: records young collection completion; no tenuring threshold field.
-- No existing JFR event covers ZGC's per-cycle tenuring threshold selection.
+- `jdk.ZYoungGarbageCollection`: **already has `tenuringThreshold` field** (set in `zTracer.cpp:104` to `ZGeneration::young()->tenuring_threshold()`). This is the per-collection threshold value. However, it has **no `reason` field** — an operator cannot tell whether the threshold came from a `"Promote All"` emergency, a `-XX:ZTenuringThreshold` flag override, or the dynamic computation. The `reason` field is the unique contribution of this proposal.
+- `jdk.ZGCConfiguration`: records the static `-XX:ZTenuringThreshold` flag value at JVM startup. Not the per-cycle selection (which can differ from the flag when `"Promote All"` or `"Computed"` paths fire).
+- No existing JFR event covers the selection reason for ZGC's per-cycle tenuring threshold.
 
 #### External references
 
@@ -1004,8 +1016,9 @@ Different algorithms (mortality rate analysis vs. life decay factor), different 
 
 #### Open questions / upstream concerns
 
-1. Should `reason="Computed"` be supplemented with the 3 intermediate values (`lifeDecayFactor`, `youngLogResidency`, `allocatedGarbageRatio`)? Currently excluded because they are at `log_debug` level. Could be added in a follow-up.
-2. Is `gcId` reliably set when `select_tenuring_threshold()` fires? The call is inside `select_relocation_set()`, which is a concurrent phase — the GC ID should be set at the start of the young collection.
+1. **Preferred approach is field extension, not new event**: `jdk.ZYoungGarbageCollection` already carries `tenuringThreshold`. Adding a `tenuringThresholdReason` field (`"Promote All"` / `"ZTenuringThreshold"` / `"Computed"`) to that event is a smaller change and avoids duplicating the threshold value. The standalone event should only be proposed if the timing difference (selection phase vs. collection end) is also valuable.
+2. Should `reason="Computed"` be supplemented with the 3 intermediate values (`lifeDecayFactor`, `youngLogResidency`, `allocatedGarbageRatio`)? Currently excluded because they are at `log_debug` level. Could be added in a follow-up.
+3. Is `gcId` reliably set when `select_tenuring_threshold()` fires? The call is inside `select_relocation_set()`, which is a concurrent phase — the GC ID should be set at the start of the young collection.
 
 ---
 
@@ -1701,7 +1714,9 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 
 - `jdk.ZYoungGarbageCollection`: fires after GC is chosen; does not capture ticks where no GC triggered.
 - `jdk.ZOldGarbageCollection`: same — outcome event, not trigger-decision event.
+- `jdk.ZAllocationStall`: fires when an allocating thread had to stall waiting for memory — this is the **failure case** that ZGC's proactive director is supposed to prevent. `jdk.ZDirectorRule` is complementary: it shows the prevention-side decisions; `jdk.ZAllocationStall` shows when prevention failed.
 - `jdk.GarbageCollection` (base): same.
+- `jdk.ZStatisticsCounter` and `jdk.ZStatisticsSampler`: **experimental** events (`experimental="true"` in `metadata.xml` — not enabled by default, not stable API). They expose internal ZGC metric counters/samplers by opaque enum ID, not structured director rule evaluations. They do not provide per-tick trigger reasoning or `timeUntilMinorOOM`.
 - No existing JFR event exposes ZGC director rule evaluation or non-triggering ticks.
 
 #### External references
