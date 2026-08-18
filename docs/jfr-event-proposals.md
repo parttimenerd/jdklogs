@@ -133,6 +133,28 @@ NativeHeapTrimmer background thread
 
 The RSS data `sc.before` and `sc.after` are collected from `/proc/self/status VmRSS` at [`trimNativeHeap.cpp:141`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/trimNativeHeap.cpp#L141) **only** when `const bool logging_enabled = lt.is_enabled()` is true. The `SizingCollection*` pointer is passed to `os::trim_native_heap()` only in the logging branch.
 
+**Current code** ([`trimNativeHeap.cpp:135-160`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/trimNativeHeap.cpp#L135)):
+
+```cpp
+void execute_trim_and_log(double t1) {
+  os::size_change_t sc = { 0, 0 };
+  LogTarget(Info, trimnative) lt;
+  const bool logging_enabled = lt.is_enabled();
+
+  // RSS data collected ONLY if logging is active:
+  if (os::trim_native_heap(logging_enabled ? &sc : nullptr)) {
+    _num_trims_performed++;
+    if (logging_enabled) {
+      if (sc.after != SIZE_MAX) {
+        log_info(trimnative)("Periodic Trim (%lu): %s->%s (%c%s) %.3fms", ...);
+      } else {
+        log_info(trimnative)("Periodic Trim (%lu): complete (no details) %.3fms", ...);
+      }
+    }
+  }
+}
+```
+
 A JFR event implementation **must not** gate data collection on whether `-Xlog:trimnative=info` is active. The fix is to call `os::trim_native_heap()` with a non-null `SizingCollection*` unconditionally — or, equivalently, to check `(lt.is_enabled() || jfr_event_enabled)` before deciding whether to populate the struct. This is a small upstream code change but it is a real prerequisite.
 
 #### Fields
@@ -222,6 +244,41 @@ Allocating application thread
 **GCOverheadLimit feature**: Implemented in G1 via [JDK-8212084](https://bugs.openjdk.org/browse/JDK-8212084), [PR #27950](https://github.com/openjdk/jdk/pull/27950), merged JDK 26. Also present in Parallel GC.
 
 **Counter-update vs. throw-point distinction**: `update_gc_overhead_counter()` ([`g1CollectedHeap.cpp:995`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)) runs at each safepoint and logs the raw counter at `log_debug(gc)`. The JFR event belongs at the throw point — `satisfy_failed_allocation()` line 1109 — where `gc_overhead_limit_exceeded()` returns true and control flow is about to return null to the allocating thread. At that point, the final counter value, `long_term_gc_time_ratio`, and `free_space_percent` are all in scope.
+
+**G1 counter update + throw point** ([`g1CollectedHeap.cpp:995-1111`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)):
+
+```cpp
+// Called at each safepoint (per-GC-pause counter update):
+void G1CollectedHeap::update_gc_overhead_counter() {
+  bool gc_time_over_limit =
+    (_policy->analytics()->long_term_gc_time_ratio() * 100) >= GCTimeLimit; // default 98%
+  double free_space_percent =
+    percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity());
+  bool free_space_below_limit = free_space_percent < GCHeapFreeLimit;  // default 2%
+
+  log_debug(gc)("GC Overhead Limit: GC Time %f Free Space %f Counter %zu",
+                ..., _gc_overhead_counter);
+
+  if (gc_time_over_limit && free_space_below_limit) {
+    _gc_overhead_counter++;   // Both conditions must be true simultaneously
+  } else {
+    _gc_overhead_counter = 0; // Reset if either condition clears
+  }
+}
+
+// Called at allocation failure (throw point):
+// satisfy_failed_allocation() at g1CollectedHeap.cpp:1076:
+update_gc_overhead_counter();   // Update counter first
+// ... attempt final GC ...
+// At line 1109: check and log:
+if (gc_overhead_limit_exceeded()) {  // _gc_overhead_counter >= GCOverheadLimitThreshold (=5)
+  log_info(gc)("GC Overhead Limit exceeded too often (%zu).", GCOverheadLimitThreshold);
+  // ← JFR event fires HERE; fields in scope: long_term_gc_time_ratio, free_space_percent
+}
+return nullptr;  // OOM thrown to allocating thread
+```
+
+The JFR event fires at the `log_info` site: `long_term_gc_time_ratio` and `free_space_percent` are local variables in the same `satisfy_failed_allocation()` scope (computed by `update_gc_overhead_counter()` at line 1076, still accessible at line 1109).
 
 #### Fields
 
