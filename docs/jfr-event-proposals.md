@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 64)
+**Last updated**: 2026-08-19 (pass 65)
 
 ---
 
@@ -188,7 +188,7 @@ Containerized JVMs running glibc suffer from a well-known RSS bloat problem: mal
 #### Why existing events don't cover this
 
 - `jdk.ResidentSetSize`: carries `size` (current RSS) and `peak` (peak RSS since JVM start); fires `period="everyChunk"` as a snapshot. It answers "what is RSS right now" — it cannot attribute a change to a deliberate trim operation, because other allocation/deallocation activity happens concurrently. There is no `deltaBytes` field, no `trimDuration` field, and no way to isolate a single trim operation's contribution from background noise. The two events are orthogonal: `jdk.NativeHeapTrim` says "this specific trim recovered X bytes in Y ms"; `jdk.ResidentSetSize` says "RSS is currently Z bytes".
-- No other JFR event references `NativeHeapTrimmer`, `TrimNativeHeapInterval`, or `os::trim_native_heap`. The trim operation is entirely invisible in JFR today: there is no `beforeBytes`/`afterBytes` pair, no `trimDurationMs`, no `detailsAvailable` flag, and no `trimCount` monotonic counter. The only native-heap signal in JFR is the `jdk.ResidentSetSize` periodic snapshot, which captures no per-trim causality.
+- No existing JFR event references `NativeHeapTrimmer`, `TrimNativeHeapInterval`, or `os::trim_native_heap`. The trim operation is entirely invisible in JFR today: there is no `beforeBytes`/`afterBytes` pair, no `trimDurationMs`, no `detailsAvailable` flag, and no `trimCount` monotonic counter. The only native-heap signal in JFR is the `jdk.ResidentSetSize` periodic snapshot, which captures no per-trim causality. Without `jdk.NativeHeapTrim`, an operator cannot answer "did the trim that ran 30 seconds ago recover any memory?" from a JFR recording alone.
 
 #### External references
 
@@ -468,7 +468,7 @@ void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
 - `jdk.ShenandoahPromotionInformation`: records promotion counts by generation and region type. **No CPU utilization fields** — `gcuPercent`, `muPercent`, and `periodSeconds` do not exist in this event. It fires once per collection, not per GC phase window.
 - `jdk.GarbageCollection`: records GC completion with cause and duration. Duration is the STW pause only; it does not capture GCU% across the full concurrent phase. The ratio `jdk.GarbageCollection.duration / inter-GC interval` is a crude approximation of pause-fraction, not the `gcuPercent` (which includes concurrent GC threads).
 - `jdk.ShenandoahHeapRegionStateChange`: fires when a region transitions between `Empty`, `Regular`, `HumongousStart`, `HumongousContination`, `CSet`, `Pinned` etc. states — fine-grained region lifecycle events. No time-fraction breakdown; no `gcuPercent`, `muPercent`, or `periodSeconds` fields. This event tracks individual region state changes, not aggregate GC CPU consumption across a phase window.
-- No Shenandoah-specific JFR event captures the `ShenandoahMmuTracker` `gcuPercent`/`muPercent` data. The `ShenandoahMmuTracker` object fields (`_most_recent_gcu`, `_most_recent_mu`, `_most_recent_timestamp`, `_active_processors`) have no representation in any existing `jdk.Shenandoah*` JFR event.
+- No existing JFR event captures the `ShenandoahMmuTracker` `gcuPercent`/`muPercent` data. The `ShenandoahMmuTracker` object fields (`_most_recent_gcu`, `_most_recent_mu`, `_most_recent_timestamp`, `_active_processors`) have no representation in any existing `jdk.Shenandoah*` JFR event. Without `jdk.ShenandoahMMU`, GC CPU overhead in a Shenandoah JVM is entirely unquantifiable from JFR — the only substitute is `-Xlog:gc,ergo=info` log parsing, which is unavailable in post-mortem JFR analysis.
 
 #### External references
 
@@ -602,6 +602,7 @@ const char* ShenandoahGenerationalControlThread::gc_mode_name(GCMode mode) {
 - `jdk.ShenandoahHeapRegionStateChange`: fires after regions change state; does not capture the heuristic decision at the start of a cycle. No `generation`, `triggerType`, `available`, or `cause` fields.
 - `jdk.GCHeapSummary`: records heap sizes before/after GC (`heapSpace.used`, `heapSpace.size`); does not capture why GC was started, which generation was targeted, or any adaptive heuristic output (`anticipatedGcDurationMs`, `marginOfError`, fragmentation metrics).
 - `jdk.GarbageCollection`: records GC outcomes; the `cause` field carries a high-level GC cause string (e.g., `"GCInvokedWithForce"`) but not the adaptive heuristic reasoning — `triggerType`, `rate_average` vs. `rate_accelerated`, `fragmentationDensityPct`, `liveAtPrevMarkBytes`, or any of the diagnostic fields this event provides. An operator seeing only `jdk.GarbageCollection` cannot distinguish a rate-triggered GC from an expansion-failure-triggered GC.
+- No existing JFR event exposes any field from `ShenandoahAdaptiveHeuristics` or `ShenandoahOldHeuristics`. The heuristic state (`_margin_of_error_sd`, `_anticipated_gc_duration_secs`, `_cannot_expand_trigger`, `_fragmentation_trigger`, `_growth_trigger`) is computed at trigger time and emitted to `-Xlog:gc=info` but has no JFR representation. The result is that JFR recordings contain no basis for answering why a Shenandoah GC cycle started — only that it did.
 
 #### What it is used for
 
@@ -1087,7 +1088,7 @@ Fires at end of every ZGC generation collection (both young and old).
 #### Why existing events don't cover this
 
 - No existing JFR event exposes nmethod registration counts for any GC. `ZNMethodTable::registered_nmethods()` (`_nregistered`) and the stale-slot count (`_nunregistered`) have no JFR representation. The nmethod table is a ZGC-specific structure separate from the code cache — it tracks only the subset of compiled methods that contain heap references (oops in compiled frames) that ZGC must scan per collection.
-- `jdk.CodeCacheStatistics`: carries `entryCount`, `methodCount`, `adaptorCount`, `unallocatedCapacity` for each code heap (`codeBlobType`) — global code cache occupancy metrics. Does not expose the ZGC-specific nmethod table (`ZNMethodTable`) which is a separate data structure, nor does it expose `_nunregistered` stale slots or per-GC scan costs.
+- `jdk.CodeCacheStatistics`: carries `entryCount`, `methodCount`, `adaptorCount`, `unallocatedCapacity` for each code heap (`codeBlobType`) — global code cache occupancy metrics. Does not expose the ZGC-specific nmethod table (`ZNMethodTable`) which is a separate data structure, nor does it expose `_nunregistered` stale slots or per-GC scan costs. Without `jdk.ZNMethodRegistration`, there is no way to determine from a JFR recording how much of a ZGC pause is attributable to nmethod scanning, nor whether stale slots from deoptimization are accumulating.
 
 #### What it is used for
 
@@ -1314,6 +1315,7 @@ Complements `jdk.G1ConcurrentRefinementSweep`: where Sweep shows per-sweep throu
 #### Why existing events don't cover this
 
 - Same analysis as `jdk.G1ConcurrentRefinementSweep` applies for the base refinement gap. Additionally: no existing JFR event exposes the adaptive refinement thread count (`threadsWanted`) or the `pendingCardsTarget` policy parameter. These are the key outputs of the `adjust_threads_wanted()` heuristic — the thread count the policy *wants* vs. what it *has* — and neither is observable in any existing JFR event.
+- No existing JFR event fires from `G1ConcurrentRefineTask::adjust_threads_wanted()`. The result is that the entire adaptive thread-count control loop — G1's mechanism for keeping pace with the mutator write rate — is invisible in JFR recordings. An operator cannot determine from JFR alone whether G1 refinement is running at 2 threads or 8, whether it is consistently at the thread ceiling, or whether the pending-card target is being met.
 
 #### External references
 
@@ -1614,6 +1616,7 @@ G1 adjusts the committed heap between pauses based on GC CPU usage vs. a target 
 - `jdk.G1HeapSummary`: carries `heapSpace` (reserved/committed/used) and `edenUsedSize`/`edenTotalSize`/`survivorUsedSize`/`metaspaceUsedSize` — size outcomes. By diffing consecutive events you can compute the resize delta, but you cannot determine whether the resize was driven by GC CPU usage exceeding `upperThresholdPct`, by the long-term check, or why it was suppressed (`atLimit=true`). The `deviationCounter`, `scaleFactorPct`, and `gcCpuUsageTargetPct` fields are absent entirely.
 - `jdk.GCHeapSummary`: records `heapSpace` (reserved/committed/used) — the same size-outcome limitation as `jdk.G1HeapSummary`. Does not carry any of: `deviationCounter`, `shortTermGcCpuUsagePct`, `upperThresholdPct`, `lowerThresholdPct`, `gcCpuUsageTargetPct`, `scaleFactorPct`, `expand`, `atLimit`, or `resizeBytes`.
 - `jdk.GCConfiguration`: records `gcTimeRatio` at JVM startup (`GCTimeRatio` flag value); does not expose the per-pause deviation counter, whether the heap reached a resize threshold this pause, or the effective scaled `gcCpuUsageTargetPct` (which differs from `1/(1+GCTimeRatio)` when heap is below half of max capacity — see `scale_with_heap()` in `g1HeapSizingPolicy.cpp:131`).
+- No existing JFR event exposes `G1HeapSizingPolicy`'s `_gc_cpu_usage_deviation_counter`, `expand`, `atLimit`, `scaleFactorPct`, or `resizeBytes`. By diffing consecutive `jdk.G1HeapSummary` events you can compute the resize delta after the fact, but you cannot determine what CPU deviation triggered the resize, how close the counter was to the threshold, whether the resize was blocked by `-Xms`/`-Xmx` limits, or what scale factor was applied. The policy's internal reasoning is entirely absent from the JFR event stream today.
 
 #### External references
 
