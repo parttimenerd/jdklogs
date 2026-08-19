@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 71)
+**Last updated**: 2026-08-19 (pass 72)
 
 ---
 
@@ -36,24 +36,24 @@ Events sourced from sites inside `#ifndef PRODUCT` guards are **blocked** — th
 
 ## Summary Table
 
-| # | Event name | Verdict | Priority | Log level | Fires when |
-|---|---|---|---|---|---|
-| — | jdk.StringDeduplicationStatistics | **Remove** | — | — | Superseded by jdk.StringDeduplication (JDK 26) |
-| — | jdk.ShenandoahCardStatistics | **Blocked** | — | `#ifndef PRODUCT` | Guard must be removed first |
-| 1 | jdk.NativeHeapTrim | **Propose with caveats** | High | `log_info(trimnative)` | Each native heap trim operation |
-| 2 | jdk.GCOverheadLimitExceeded | **Propose with caveats** | High | `log_info(gc)` | OOM throw: GC overhead limit exceeded |
-| 3 | jdk.ShenandoahMMU | **Propose with caveats** | High | `log_info(gc,ergo)` (primary); `log_debug(gc)` (periodic) | End of Shenandoah GC phase; ~200ms periodic |
-| 4 | jdk.ShenandoahCollectionDecision | **Propose with caveats** | High | `log_info(gc,ergo)` / `log_info(gc)` | Shenandoah GC cycle start |
-| 5 | jdk.ShenandoahReclaimProgress | **Propose with caveats** | Medium | `log_info(gc,ergo)` | End of degenerated or full Shenandoah GC |
-| 6 | jdk.ShenandoahTenuringThreshold | **Propose** | Medium | `log_info(gc,age)` | Each Shenandoah young collection planning phase |
-| 7 | jdk.ZGCTenuringThreshold | **Propose with caveats** | Medium | `log_info(gc,reloc)` | `jdk.ZYoungGarbageCollection` field extension |
-| 8 | jdk.ZNMethodRegistration | **Propose with caveats** | Low | `log_info(gc,nmethod)` | End of each ZGC generation collection |
-| 9 | jdk.G1ConcurrentRefinementSweep | **Propose with caveats** | Medium | `log_debug(gc,refine)` | Each G1 refinement sweep completion |
-| 10 | jdk.G1ConcurrentRefinementPolicy | **Propose with caveats** | Medium | `log_debug(gc,refine)` | Each young GC pause end + periodic |
-| 11 | jdk.G1CollectionSetCandidates | **Propose with caveats** | Medium | `log_debug(gc,ergo,cset)` | Each mixed GC CSet finalization |
-| 12 | jdk.G1HeapResize | **Propose with caveats** | Medium | `log_debug(gc,ergo,heap)` | Each young GC pause end |
-| 13 | jdk.ZDirectorRule | **Propose with caveats** | Medium | `log_debug(gc,director)` | Each ZGC director tick (~1s) |
-| 14 | jdk.PSAdaptiveSizePolicy | **Propose with caveats** | Medium | `log_debug(gc,ergo)` | Each Parallel GC young collection |
+| # | Event name | Verdict | Priority | Log level | Fires when | Impl difficulty |
+|---|---|---|---|---|---|---|
+| — | jdk.StringDeduplicationStatistics | **Remove** | — | — | Superseded by jdk.StringDeduplication (JDK 26) | — |
+| — | jdk.ShenandoahCardStatistics | **Blocked** | — | `#ifndef PRODUCT` | Guard must be removed first | Blocked |
+| 1 | jdk.NativeHeapTrim | **Propose with caveats** | High | `log_info(trimnative)` | Each native heap trim operation | **Easy** — single emission site in `execute_trim_and_log()`; all fields are locals at that point; ~20 lines |
+| 2 | jdk.GCOverheadLimitExceeded | **Propose with caveats** | High | `log_info(gc)` | OOM throw: GC overhead limit exceeded | **Easy** — single throw point per collector; fields are accessor calls on the policy object at the emission site; ~30 lines per collector |
+| 3 | jdk.ShenandoahMMU | **Propose with caveats** | High | `log_info(gc,ergo)` (primary); `log_debug(gc)` (periodic) | End of Shenandoah GC phase; ~200ms periodic | **Easy** — `update_utilization()` already computes and logs all fields; JFR emit alongside `log_info` call; ~20 lines |
+| 4 | jdk.ShenandoahCollectionDecision | **Propose with caveats** | High | `log_info(gc,ergo)` / `log_info(gc)` | Shenandoah GC cycle start | **Medium** — base event is easy (single `service_concurrent_normal_cycle()` site); trigger-type fields require reading from the heuristic objects at that call site; ~50 lines base + ~40 lines trigger augmentation |
+| 5 | jdk.ShenandoahReclaimProgress | **Propose with caveats** | Medium | `log_info(gc,ergo)` | End of degenerated or full Shenandoah GC | **Easy** — `is_good_progress()` already evaluates all dimensions; JFR emit at each of the 4 call sites alongside existing `log_info` lines; ~30 lines |
+| 6 | jdk.ShenandoahTenuringThreshold | **Propose** | Medium | `log_info(gc,age)` | Each Shenandoah young collection planning phase | **Easy** — single `update_tenuring_threshold()` site; all three fields (`tenuringThreshold`, `minTenuringAge`, `maxTenuringAge`) are the direct outputs of `compute_tenuring_threshold()`; ~15 lines |
+| 7 | jdk.ZGCTenuringThreshold | **Propose with caveats** | Medium | `log_info(gc,reloc)` | `jdk.ZYoungGarbageCollection` field extension | **Easy** — preferred approach is a one-field addition (`tenuringThresholdReason`) to existing `jdk.ZYoungGarbageCollection` in `zTracer.cpp`; ~15 lines |
+| 8 | jdk.ZNMethodRegistration | **Propose with caveats** | Low | `log_info(gc,nmethod)` | End of each ZGC generation collection | **Easy** — `ZStatNMethods::print()` already collects all three counts; JFR emit alongside `log_info` call in `zStat.cpp`; ~15 lines |
+| 9 | jdk.G1ConcurrentRefinementSweep | **Propose with caveats** | Medium | `log_debug(gc,refine)` | Each G1 refinement sweep completion | **Medium** — `print_refinement_stats()` already aggregates the card category counters; JFR emit at the same call site; also requires log-level promotion from `log_debug` to `log_info`; ~40 lines |
+| 10 | jdk.G1ConcurrentRefinementPolicy | **Propose with caveats** | Medium | `log_debug(gc,refine)` | Each young GC pause end + periodic | **Medium** — `adjust_threads_wanted()` has all fields in scope; periodic-path-only emission simplifies shape; also requires log-level promotion; ~40 lines |
+| 11 | jdk.G1CollectionSetCandidates | **Propose with caveats** | Medium | `log_debug(gc,ergo,cset)` | Each mixed GC CSet finalization | **Hard** — requires adding a `StopReason` enum to replace string literals across `finalize_old_part()`; two separate emission sites (Marking + Retained paths); log-level promotion needed; ~80 lines including enum |
+| 12 | jdk.G1HeapResize | **Propose with caveats** | Medium | `log_debug(gc,ergo,heap)` | Each young GC pause end | **Medium** — `young_collection_resize_amount()` has all fields in scope; must emit only when `resizeBytes != 0`; shrink-path fields require null handling; also requires log-level promotion; ~50 lines |
+| 13 | jdk.ZDirectorRule | **Propose with caveats** | Medium | `log_debug(gc,director)` | Each ZGC director tick (~1s) | **Hard** — `timeUntilMinorOOM` and `minorFreeBytes` are locals inside `rule_minor_allocation_rate_dynamic()` and do not flow to `start_gc()`; requires a `ZDirectorResult` struct (~15 lines) to propagate them; plus emission gate logic and log-level promotion; ~70 lines total |
+| 14 | jdk.PSAdaptiveSizePolicy | **Propose with caveats** | Medium | `log_debug(gc,ergo)` | Each Parallel GC young collection | **Medium** — all fields accessible as policy accessor methods at `resize_after_young_gc()` end; `edenSizingBranch` requires replacing the raw boolean in `compute_desired_eden_size()` with a string-valued output; also requires log-level promotion; ~50 lines |
 
 ---
 
@@ -1500,6 +1500,10 @@ Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](ht
 
 Oracle explicitly tells operators to enable `gc+ergo+cset=debug` to diagnose mixed-GC timing — `jdk.G1CollectionSetCandidates` makes this information JFR-accessible without enabling debug logging. The `stopReason` field directly explains which of these three tuning knobs (`G1MixedGCCountTarget`, `G1MixedGCLiveThresholdPercent`, `G1HeapWastePercent`) is the binding constraint.
 
+[JDK-8387299](https://bugs.openjdk.org/browse/JDK-8387299) — "G1: Use num_regions naming consistently for region counts": standardised the `num_regions` accessor naming across `G1CollectionSet`. The `availableRegions` field in `jdk.G1CollectionSetCandidates` maps to this stable accessor — the rename confirms the API surface is intentional rather than incidental.
+
+[JDK-8386247](https://bugs.openjdk.org/browse/JDK-8386247) — "G1: Cleanup naming and type use of G1CollectionSet class members and methods": recent structural cleanup of `G1CollectionSet` internals. Relevant as provenance for the naming stability of the accessors (`num_candidates()`, `finalize_old_part()`) that the proposed emission sites depend on.
+
 #### Open questions / upstream concerns
 
 1. **Debug-level source**: same justification as for `jdk.G1ConcurrentRefinementSweep` and same recommended approach — promote the finish-message log calls from `log_debug(gc,ergo,cset)` to `log_info(gc,ergo,cset)` in the same PR. The Oracle Tuning Guide explicitly directs operators to enable `gc+ergo+cset=debug` to diagnose mixed-GC timing; promoting those log sites to info makes the guidance consistent with production observability practice.
@@ -1761,6 +1765,8 @@ Oracle ZGC Tuning Guide — [ZGC](https://docs.oracle.com/en/java/javase/26/gctu
 
 `jdk.ZDirectorRule` directly exposes the director tick data that drives this proactive triggering — currently only visible via `-Xlog:gc+director=debug`. The `timeUntilMinorOOM` field is the director's prediction of heap exhaustion, the core value behind ZGC's proactive model.
 
+[JDK-8338977](https://bugs.openjdk.org/browse/JDK-8338977) — "Parallel: Improve heap resizing heuristics": while a Parallel GC bug, it demonstrates that GC teams actively improve adaptive heuristics and consider their observability — the same class of change that motivates `jdk.ZDirectorRule`.
+
 #### Open questions / upstream concerns
 
 1. **All-debug source**: `zDirector.cpp` has zero `log_info` sites. This is the hardest case to justify to upstream. The argument must combine three points: (a) the director tick data is production-relevant and there is no other way to observe non-triggering ticks; (b) JFR's access model is independent of `-Xlog` level — the code executes unconditionally in production builds, and JFR only gates on the JFR-enabled flag; (c) the event can be gated (see OQ2) to emit only on trigger ticks and near-OOM ticks, dramatically reducing recording volume. The best approach for the upstream submission: propose the log-level promotion of the most relevant director log messages from `log_debug` to `log_info` as part of the same PR — this addresses the root concern while adding JFR coverage simultaneously. The `timeUntilMinorOOM` field in particular deserves `log_info` promotion: it is ZGC's primary OOM-prevention metric and should be visible without enabling debug logging.
@@ -1948,6 +1954,12 @@ Oracle GC Ergonomics Guide — [Ergonomics](https://docs.oracle.com/en/java/java
 > "The heap grows or shrinks to a size that will support the chosen throughput goal."
 
 These Oracle descriptions map directly to the event fields: `throughput` (mutator time fraction) vs. `pauseGoalMs` (`MaxGCPauseMillis`), and the priority order (pause > throughput > footprint) determines which branch of `compute_desired_eden_size()` fires. `jdk.PSAdaptiveSizePolicy` makes these real-time policy decisions observable in JFR for the first time.
+
+[JDK-8338977](https://bugs.openjdk.org/browse/JDK-8338977) — "Parallel: Improve heap resizing heuristics": reshaped the Parallel GC resizing logic in `psAdaptiveSizePolicy.cpp`, establishing the current form of `compute_desired_eden_size()` and the conditions under which the four sizing branches fire. The `edenSizingBranch` field in `jdk.PSAdaptiveSizePolicy` directly encodes the branch this bug restructured.
+
+[JDK-8365922](https://bugs.openjdk.org/browse/JDK-8365922) — "Parallel: Group uses of GCTimeRatio to a single location": consolidated `GCTimeRatio` access in the Parallel GC sizing policy. The `throughput` field in `jdk.PSAdaptiveSizePolicy` is derived from `GCTimeRatio`; this cleanup confirms the stable location of that calculation.
+
+[JDK-8380590](https://bugs.openjdk.org/browse/JDK-8380590) — "Parallel: Improve tenuring-threshold heuristics": improved the survivor sizing logic that interacts with the `survivorOverflow` field in `jdk.PSAdaptiveSizePolicy`.
 
 #### Open questions / upstream concerns
 
