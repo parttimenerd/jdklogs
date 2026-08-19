@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 66)
+**Last updated**: 2026-08-19 (pass 67)
 
 ---
 
@@ -864,7 +864,7 @@ Fields excluded from the proposal (present at `log_debug` sites): mortality rate
 
 Tenuring threshold controls when objects "graduate" from young to old generation. A mis-tuned threshold causes either:
 - **Too-early promotion** (low threshold): young objects that are actually short-lived get promoted to old gen, growing the old gen unnecessarily and eventually triggering old-gen collections.
-- **Too-late promotion** (high threshold): long-lived objects stay in young gen longer, surviving multiple young collections and consuming young-gen space.
+- **Too-late promotion** (high threshold): long-lived objects stay in young gen longer, surviving multiple young collections and consuming young-gen space. Young-gen evacuation live-set grows as survivors accumulate; young collection frequency may increase as eden fills faster with a large live-set. When these objects eventually cross the `maxTenuringAge` clamp and do promote, they arrive in old gen in a cohort burst — a spike visible as a sudden jump in old-gen occupancy. **Actionable signal**: if `tenuringThreshold == maxTenuringAge` for 3+ consecutive cycles and old-gen occupancy is rising gradually between young collections (visible via `jdk.ShenandoahHeapRegionStateChange` old-gen region transitions), the threshold ceiling is allowing an excessive backlog to accumulate. Lower `ShenandoahGenerationalMaxTenuringAge` by 1–2 to allow earlier promotion and spread old-gen load across more cycles rather than concentrating it into a burst.
 
 Shenandoah computes this dynamically from mortality rates, so the threshold adapts to object lifetimes automatically. This event lets you verify that the algorithm is working correctly for your workload.
 
@@ -999,7 +999,7 @@ const uint tenuring_threshold = clamp((uint)round(tenuring_threshold_raw), lower
 
 #### What it is used for
 
-- **Baseline the computed threshold**: what is the typical threshold for your workload? Compare across deployments or load patterns.
+- **Baseline the computed threshold**: the stable threshold value is a workload fingerprint. For a latency-sensitive web service with short request lifetimes, a stable threshold of 3–5 is typical — objects that survive more than 3–5 minor collections are session state or connection-pool objects that should be in old gen. For a batch-processing workload with large intermediate result objects, a threshold of 8–12 is appropriate because many objects survive multiple batches before being discarded. Compare across deployments, canary releases, and load patterns: if the stable threshold for a service drops from 6 to 2 after a new deployment, the new code is creating more long-lived objects per request — the threshold shift is a regression signal even if no latency alarm fired yet. Also compare across JVM restarts after a code change; a persistent stable-threshold shift across restarts confirms the change altered object lifetime distribution.
 - **Detect mode shifts**: `reason="Promote All"` is an emergency signal — ZGC decided to flush the young gen entirely because allocation pressure exceeded its model. This causes a spike in old-gen promotions.
 - **Validate flag overrides**: if `-XX:ZTenuringThreshold` is set but `reason` shows `"Computed"`, the flag value was out of range; if `reason="ZTenuringThreshold"` on every collection, the flag is locking the threshold and the dynamic algorithm is not running.
 
@@ -1753,7 +1753,7 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 - `jdk.ZYoungGarbageCollection`: fires after a GC is chosen and completed; records `tenuringThreshold`, `pause` duration, and cause. Does not capture ticks where no GC triggered — the most important case for proactive diagnosis. No `timeUntilMinorOOM`, no rule name, no heap-free fraction at decision time.
 - `jdk.ZOldGarbageCollection`: same limitation — outcome event after an old collection completes; records `pause`, cause, and GC ID. No director rule fields, no `heapFreePercent`, no `timeUntilMinorOOM`, and no non-triggering ticks.
 - `jdk.ZAllocationStall`: fires when an allocating thread had to stall waiting for memory — this is the **failure case** that ZGC's proactive director is supposed to prevent. `jdk.ZDirectorRule` is complementary: it shows the prevention-side decisions; `jdk.ZAllocationStall` shows when prevention failed. If `jdk.ZAllocationStall` events appear despite `jdk.ZDirectorRule` showing `timeUntilMinorOOM > 2s`, the rate model is under-predicting actual consumption.
-- `jdk.GarbageCollection` (base): records GC completion with cause, duration, and GC ID — no director rule fields, no non-triggering ticks. The `cause` string may be `"ZAllocationRate"` when the alloc-rate rule fires, but does not distinguish `_z_allocation_rate_static` from `_z_allocation_rate_dynamic`, and carries no `timeUntilMinorOOM` or `heapFreePercent` at decision time.
+- `jdk.GarbageCollection` (base): records GC completion with cause, duration, and GC ID — no director rule fields, no non-triggering ticks. The `cause` string is `"ZAllocationRate"` when the alloc-rate rule fires, but does not distinguish `_z_allocation_rate_static` from `_z_allocation_rate_dynamic`, and carries no `timeUntilMinorOOM` or `heapFreePercent` at decision time.
 - `jdk.ZStatisticsCounter` and `jdk.ZStatisticsSampler`: **experimental** events (`experimental="true"` in `metadata.xml` — not enabled by default, not stable API). They expose internal ZGC metric counters/samplers by opaque enum ID, not structured director rule evaluations. They do not provide per-tick trigger reasoning or `timeUntilMinorOOM`.
 - No existing JFR event captures ZGC director rule evaluation or non-triggering ticks — the complete silence on idle or below-threshold ticks is the fundamental gap this event fills. Every tick where `triggeredMinorRule=null` and `triggeredMajorRule=null` currently produces no JFR record; the only way to distinguish "heap is genuinely idle" from "allocation pressure is building toward the trigger threshold" is with this event's `heapFreePercent` and `timeUntilMinorOOM` fields.
 
@@ -1923,7 +1923,7 @@ Parallel GC's adaptive size policy implements a feedback control loop that resiz
 
 **Diagnosis patterns**:
 - `survivorOverflow=true` repeatedly → survivor is too small; objects are bypassing it and aging into old gen prematurely. Decrease `-XX:SurvivorRatio` (lower = larger survivor space) or reduce `-XX:MaxTenuringThreshold` to promote earlier.
-- `promotedBytesEstimate` growing monotonically → old-gen promotions are increasing; expect more frequent major GCs.
+- `promotedBytesEstimate` growing monotonically across 3+ consecutive events → old-gen promotions are accelerating; the policy's model predicts progressively more bytes will survive each young collection. **Two root causes to distinguish**: (a) `survivorOverflow=true` on any of those events = objects are bypassing survivor and going directly to old gen because survivor space is full — reduce `-XX:SurvivorRatio` to make survivor larger, which is the primary fix; (b) `survivorOverflow=false` and `promotedBytesEstimate` is growing = the application's live set is genuinely expanding (more long-lived objects being created per cycle) — check for allocation pattern changes in the application (e.g., growing caches, session state accumulation). In case (b), no GC tuning prevents the growth; the object graph size must be bounded at the application level. In both cases, a growing `promotedBytesEstimate` eventually triggers `shrinkBytes > 0` to resize old gen upward — if old gen cannot expand due to `-Xmx`, a Full GC is imminent.
 - `minorPauseMs > pauseGoalMs` and `desiredEden < currentEden` → policy is actively shrinking eden to reduce pause time; if throughput also degrades, `MaxGCPauseMillis` is set too low.
 - `gcDistanceSec` very short (< 0.5s) → GC running more than twice per second; eden is undersized for the current allocation rate. Cross-reference `edenSizingBranch`: if it is `throughput_grow`, the policy is already growing eden but is constrained by `MaxNewSize` — raise it. If `edenSizingBranch` is `pause_shrink` or `distance_shrink` despite short inter-GC intervals, a conflicting goal is preventing eden growth — `MaxGCPauseMillis` is too tight for this workload's allocation rate; raise or remove it.
 - `shrinkBytes > 0` frequently → policy is repeatedly shrinking old gen; if `promotedBytesEstimate` exceeds `(oldGenFree - shrinkBytes)` within 2–3 cycles, the shrink triggered a promotion overflow and a Full GC is likely. Reduce aggressiveness by increasing `GCTimeRatio` or disabling automatic shrink via `-XX:-UseAdaptiveSizePolicy`.
