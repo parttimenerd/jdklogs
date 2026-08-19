@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 67)
+**Last updated**: 2026-08-19 (pass 68)
 
 ---
 
@@ -1122,7 +1122,9 @@ A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the t
 
 #### Verdict
 
-**Propose with caveats.** The code is in the product build (not `#ifndef PRODUCT` guarded); the data is available. The `log_debug` source is a valid concern for upstream reviewers, but the argument is straightforward: refinement sweep metrics are essential for understanding G1 concurrent refinement behavior (actively redesigned across recent JDK versions) in production, and they have never been accessible without enabling debug logging. JFR changes the access model, not the data.
+**Propose with caveats.** The code is in the product build (not `#ifndef PRODUCT` guarded); the data is available at `print_refinement_stats()`. The `log_debug` source is a valid concern for upstream reviewers, but the counter-argument is straightforward: refinement sweep metrics are essential for diagnosing G1 pause-time variance (refinement backlog spilling into `Update Remembered Set`), the subsystem has undergone active redesign across recent JDK versions, and the data has never been accessible without enabling debug logging. JFR changes the access model, not the data.
+
+The Oracle G1 Tuning Guide explicitly documents `G1ConcRefinementThreads` and `Pending Cards` as tuning controls for the `Update RS` pause phase — yet the metrics behind those controls are only accessible at `log_debug` level. This is the core upstream argument: a documented tuning control whose observable data requires debug logging is an observability design gap. **Recommended approach for upstream submission**: promote `print_refinement_stats()` from `log_debug(gc,refine)` to `log_info(gc,refine)` in the same PR. The promotion is justified by the same Oracle tuning guide references.
 
 #### The question it answers
 
@@ -1226,7 +1228,11 @@ The Oracle tuning guide explicitly calls out `-XX:G1ConcRefinementThreads` and t
 
 #### Verdict
 
-**Propose with caveats.** Same debug-level caveat as `jdk.G1ConcurrentRefinementSweep`. Consider proposing both refinement events in the same RFE/PR since they are complementary.
+**Propose with caveats.** The code is in the product build; the data is available at the `adjust_threads_wanted()` call site. The `log_debug` source caveat is the same as for `jdk.G1ConcurrentRefinementSweep` — see that event's OQ1 for the full counter-argument, including the `jdk.G1AdaptiveIHOP` precedent.
+
+The unique justification for this event beyond the Sweep event: `threadsWanted` is the primary output of G1's refinement control loop and directly determines whether card processing keeps pace with the mutator write rate. The Oracle G1 Tuning Guide explicitly documents `-XX:G1ConcRefinementThreads` as a tuning control, yet the policy's per-tick decision about how many threads it *wants* has never been observable without debug logging. Making a documented tuning control's policy output invisible at production log levels is an observability design gap — this event closes it.
+
+**Recommendation**: propose both refinement events in the same RFE/PR. They share a single upstream justification (refinement observability gap), the same debug-level source caveat, the same resolution strategy (log-level promotion in the same PR), and they are operationally complementary — Sweep shows actual throughput, Policy shows the thread-count intent. A joint proposal is a stronger upstream submission than two separate ones.
 
 #### The question it answers
 
@@ -1339,13 +1345,19 @@ Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](ht
 
 #### Verdict
 
-**Propose with caveats.** The debug-level source is the primary concern. The `stopReason` field requires synthesis from multiple stop-condition log lines, which upstream may push back on. Consider a simpler version without `stopReason` (or with `stopReason` as a string enum synthesized at a single call site).
+**Propose with caveats.** The code is in the product build; the data is available at `finalize_old_part()`. Two caveats:
+
+1. **Debug-level source**: all emission sites are `log_debug(gc,ergo,cset)`. Same justification as for refinement events — the data is in the product build, JFR access is independent of `-Xlog` level. The Oracle Tuning Guide explicitly directs operators to enable `gc+ergo+cset=debug` to diagnose mixed-GC timing (`"You can obtain information about how much time evacuation of either young or old generation regions contribute to the pause-time by enabling the gc+ergo+cset=debug log output"`). An Oracle-documented diagnostic that requires debug logging in production is the same category of observability gap as the refinement events. **Recommended approach**: promote the `print_finish_message()` log calls from `log_debug` to `log_info(gc,ergo,cset)` in the same PR.
+
+2. **`stopReason` synthesis**: the four stop-reason string literals in `print_finish_message()` and the exhaustion log at `g1CollectionSet.cpp:406` need to be replaced with a `StopReason` enum at the implementation level (`REGION_CAP_REACHED`, `MIN_REGIONS_MET`, `TIME_BUDGET_EXHAUSTED`, `CANDIDATES_EXHAUSTED`). This is ~10 lines of C++ and is idiomatic for this pattern. Upstream's concern about `stopReason` is unlikely to be the synthesis mechanics — it will be whether the field is too implementation-specific. The counter-argument: `stopReason` is exactly what the Oracle tuning guide's three mixed-GC knobs (`G1MixedGCCountTarget`, `G1MixedGCLiveThresholdPercent`, `G1HeapWastePercent`) are designed to address, and each maps to exactly one `stopReason` value.
 
 #### The question it answers
 
 "How many old-gen regions did G1 select for this mixed GC, and why did selection stop when it did?"
 
 Mixed GC selection is currently observable only via `-Xlog:gc+ergo+cset=debug`. The selection decision — how many candidate regions were available, how many were selected, and whether the pause-time budget or a region cap caused early termination — is invisible in JFR. Without it, an operator cannot tell whether mixed GC reclamation is bounded by the pause budget (`"Predicted time too high"`), the region cap (`"Maximum number of regions reached"`), or candidate exhaustion.
+
+The practical consequence of this gap: when old-gen occupancy grows despite mixed GC running, an operator has two hypotheses — (a) mixed GC is stopping early due to pause constraints or a region cap (GC is being cut short by tuning limits) or (b) mixed GC is exhausting the candidate list but not enough garbage exists (the live set is dense). These two hypotheses call for opposite responses: (a) requires raising `MaxGCPauseMillis` or `G1OldCSetRegionThresholdPercent`; (b) requires accepting that old gen cannot be reclaimed faster with current `G1MixedGCLiveThresholdPercent`. Without `stopReason`, `availableRegions`, and `selectedRegions`, neither hypothesis can be confirmed or refuted from JFR data alone — the operator is forced to enable `gc+ergo+cset=debug` in production to diagnose what should be a routine mixed-GC tuning question.
 
 #### Emission points
 
@@ -1497,13 +1509,21 @@ Oracle explicitly tells operators to enable `gc+ergo+cset=debug` to diagnose mix
 
 #### Verdict
 
-**Propose with caveats.** Debug-level source. Shrink-path-only nullable fields. Consider gating emission on `resizeBytes != 0` to avoid emitting events when nothing changed.
+**Propose with caveats.** The code is in the product build; the data is available. Three caveats:
+
+1. **Debug-level source**: `log_resize()` is `log_debug(gc,ergo,heap)`. Same justification as for the refinement events — the data is in the product build, JFR access is independent of `-Xlog` level. **Recommended approach**: promote `log_resize()` calls to `log_info(gc,ergo,heap)` in the same PR, parallel to how `jdk.G1AdaptiveIHOP` events were justified and accepted upstream.
+
+2. **Shrink-path nullable fields**: `scaleFactorPct`, `freeRegions`, and `regionsNeededForAlloc` are only populated on the shrink path. These are from `young_collection_shrink_amount()` which is called only when the shrink branch fires. The nullable pattern is acceptable here because all three fields have a single, consistent null condition (`expand=true`), and the emission gate (`resizeBytes != 0`) ensures null fields always co-occur with a meaningful `expand=false` context. A split into `jdk.G1HeapExpand` + `jdk.G1HeapShrink` would be cleaner but is a higher-boilerplate alternative; document this as a design choice in the proposal.
+
+3. **Emission gate**: must be gated on `resizeBytes != 0`. The `expand` reference parameter in `young_collection_resize_amount()` is only assigned inside the expand/shrink branches — when neither fires, it retains a stale value. The caller at `g1CollectedHeap.cpp:988` already checks `if (resize_bytes != 0)` before acting. The JFR event must apply the same gate to avoid emitting per-pause noise with stale field values.
 
 #### The question it answers
 
 "Why did G1 decide to expand or shrink its heap after this pause, and was the resize gated by a capacity limit?"
 
 `jdk.G1HeapSummary` records committed heap sizes at GC boundaries — you can compute the resize delta by diffing consecutive events. But the delta tells you nothing about the CPU-usage deviation counter, the thresholds, or the scale factor that drove the decision. Was the resize triggered because GC CPU exceeded the target? Or suppressed because the heap is already at `-Xmx`? These questions require the policy internals this event exposes.
+
+The practical consequence: when GC pauses are unexpectedly long despite a large heap, or when heap size oscillates between two values, or when `-Xmx` appears to be needed but the heap never actually expands — all of these scenarios are visible in `jdk.G1HeapSummary` as size outcomes, but the root cause is in the policy fields only this event carries. Specifically: `deviationCounter` shows how many consecutive above-threshold pauses have accumulated (is the heap about to expand, or is the counter resetting before reaching `G1CPUUsageExpandThreshold = 4`?); `atLimit` shows whether `-Xmx` is blocking a needed expansion; and `scaleFactorPct` shows whether an aggressive shrink (sigmoid close to max) has reduced heap below the level needed to absorb the next allocation burst. Without these three fields, the operator has symptoms (size oscillation, unexplained pauses) but no mechanism.
 
 #### Emission point
 
