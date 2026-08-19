@@ -1,8 +1,8 @@
 # JFR Event Proposals: Source-Level Evidence Dossier
 
-**Status**: Working document — 16 active proposals, 2 removed/blocked  
+**Status**: Working document — 18 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 75)
+**Last updated**: 2026-08-19 (pass 76)
 
 ---
 
@@ -56,6 +56,8 @@ Events sourced from sites inside `#ifndef PRODUCT` guards are **blocked** — th
 | 14 | jdk.PSAdaptiveSizePolicy | **Propose with caveats** | Medium | `log_debug(gc,ergo)` | Each Parallel GC young collection | **Medium** — all fields accessible as policy accessor methods at `resize_after_young_gc()` end; `edenSizingBranch` requires replacing the raw boolean in `compute_desired_eden_size()` with a string-valued output; also requires log-level promotion; ~50 lines |
 | 15 | jdk.ShenandoahOldEvacuation | **Propose** | High | `log_info(gc)` / `log_info(gc,ergo)` | Each Shenandoah old-gen mixed evacuation planning and outcome | **Easy** — all fields are locals or instance fields already printed by existing `log_info` calls across three functions; no struct changes; ~50 lines total across 3 emission sites |
 | 16 | jdk.ShenandoahAdaptiveCSetSelection | **Propose** | Medium | `log_info(gc,ergo)` | Each Shenandoah young collection CSet sizing decision | **Easy** — single emission site in `choose_collection_set_from_regiondata()`; all four fields are locals at that point; ~15 lines |
+| 17 | jdk.G1ConcurrentMarkInterrupt | **Propose** | Medium | `log_info(gc,marking)` | Concurrent mark abort or mark-stack overflow reset | **Easy** — two emission sites in `g1ConcurrentMark.cpp`; `type` discriminator distinguishes abort from overflow; `GCId` derivable from `GCIdMark` in enclosing thread context; ~20 lines |
+| 18 | jdk.G1FullGCEscalation | **Propose** | High | `log_info(gc,ergo)` | G1 Full GC triggered by allocation failure or explicit upgrade | **Easy** — three emission sites in `g1CollectedHeap.cpp`; `escalationPath` and `clearSoftRefs` distinguish the three branches; `allocationWordSize` available on the allocation-failure path; ~25 lines |
 
 ---
 
@@ -2169,6 +2171,195 @@ The four fields in this event directly correspond to the four inputs that determ
 
 ---
 
+### 17. jdk.G1ConcurrentMarkInterrupt
+
+#### Verdict
+
+**Propose.** Both emission sites are `log_info(gc,marking)` — production-visible, no log-level promotion needed. Two mutually exclusive event types (`abort` and `overflow_reset`) are combined under one event name with a `type` discriminator. Both fire from `g1ConcurrentMark.cpp`, both concern the health of an in-progress concurrent mark cycle, and both share the same consumer query: "did my concurrent mark complete cleanly?" No prerequisites.
+
+#### The question it answers
+
+"Was G1's concurrent marking interrupted, and if so, was it aborted entirely or did it reset due to mark-stack overflow?"
+
+G1's concurrent marking is a long-running background operation that runs between young GC pauses. When it is interrupted — either aborted (the cycle was cancelled) or forced to restart after a mark-stack overflow — the outcome affects GC throughput significantly. An aborted mark means no IHOP threshold update fires for that cycle and a new concurrent cycle must restart from scratch. A mark-stack overflow reset means the entire mark traversal restarts, potentially doubling or tripling the CPU time spent on that marking cycle.
+
+Today, `jdk.OldGarbageCollection` records when a concurrent mark cycle completes, but there is no JFR event for the non-completion cases. An operator seeing elevated GC CPU or unexpectedly long old-gen retention cannot tell from JFR alone whether it is caused by repeated mark interruptions.
+
+#### Emission points
+
+**Site 1 — `G1ConcurrentMark::concurrent_cycle_end()` ([g1ConcurrentMark.cpp:1282](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp#L1282))**
+
+```cpp
+void G1ConcurrentMark::concurrent_cycle_end(bool mark_cycle_completed) {
+  // ...
+  if (has_aborted()) {
+    log_info(gc, marking)("Concurrent Mark Abort");
+    _gc_tracer_cm->report_concurrent_mode_failure();
+  }
+  // ...
+}
+```
+
+Called from `G1ConcurrentMarkThread::run_service()`. The `GCIdMark` is established in the enclosing `run_service()` scope, so `GCId::current()` is valid at this call site.
+
+**Site 2 — `G1CMTask::handle_abort()` ([g1ConcurrentMark.cpp:2790](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp#L2790))**
+
+```cpp
+if (_cm->concurrent() && _worker_id == 0) {
+  _cm->reset_marking_for_restart();
+  log_info(gc, marking)("Concurrent Mark reset for overflow");
+}
+```
+
+Only worker 0 logs — this is correct; all workers reach the sync barrier but only one emits. `GCId::current()` is valid here too (same concurrent mark thread context).
+
+**Cadence**: Infrequent — fires only on interruption, not on every cycle. In a healthy deployment, zero events per day is expected.
+
+**Thread**: G1 concurrent mark thread (Site 1); concurrent mark worker 0 (Site 2).
+
+#### Fields
+
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Timestamp of the interruption. Join with `jdk.OldGarbageCollection` events by time window to identify which concurrent mark cycle was affected — the preceding `jdk.OldGarbageCollection` start time establishes when the cycle began, and this event's `startTime` marks when it was cut short. |
+| `type` | String discriminator: `"abort"` (Site 1 — cycle cancelled, `has_aborted()` is true) or `"overflow_reset"` (Site 2 — mark-stack overflow, marking restarts from scratch) | No | Use as the primary filter. `"abort"` is the more severe condition: the entire concurrent mark cycle is discarded and will restart at the next IHOP trigger. `"overflow_reset"` is recoverable within the same cycle but causes the mark traversal to restart, burning extra CPU. |
+| `gcId` | `GCId::current()` — the GC ID of the concurrent mark cycle being interrupted | No | Join key for correlating with `jdk.OldGarbageCollection` (same `gcId`), `jdk.G1BasicIHOP`/`jdk.G1AdaptiveIHOP` (the IHOP threshold that triggered this cycle), and `jdk.G1HeapSummary` (heap state when the mark was interrupted). |
+| `markCycleCompleted` | `mark_cycle_completed` parameter from `concurrent_cycle_end()` — `false` when this event fires (always, since abort means incomplete) | No | Always `false` at the abort site — included for future-proofing if the event schema is extended. At the overflow-reset site, `mark_cycle_completed` is not in scope; emit `false` unconditionally. This field is the JFR-visible equivalent of the `report_concurrent_mode_failure()` call that follows the log line. |
+
+**Dropped field — abort reason**: `has_aborted()` is a boolean; the internal `_aborted` flag is set from multiple sites (young GC preemption, humongous allocation, explicit GC request). Capturing the reason would require plumbing a reason enum through `abort()` call sites — a meaningful prerequisite. **Recommendation**: initial submission omits the reason (the `type` field already distinguishes abort from overflow); add an `abortReason` field in a follow-up if reviewers want it.
+
+#### What it is used for
+
+**Abort rate monitoring**: in a well-tuned deployment, `type="abort"` events should be rare. A sustained rate of one or more aborts per minute means G1 is repeatedly starting concurrent marking but not finishing — usually because young GC pauses are too frequent and preempting the concurrent cycle before it can complete. The fix is to reduce young GC frequency (larger eden via `G1NewSizePercent`) or increase marking parallelism (`ConcGCThreads`).
+
+**Overflow-reset diagnosis**: `type="overflow_reset"` means the mark stack ran out of capacity. Each overflow restart can double the CPU time spent marking. Cross-reference with `-XX:G1MarkStackSize` (default 1MB) and `-XX:G1MarkStackSizeMax` (default 512MB) — if this event fires regularly, the mark stack is too small for the live object graph. Action: increase `-XX:G1MarkStackSize` in 2× increments until the event stops firing.
+
+**Correlation with old-gen pressure**: if `type="abort"` events cluster immediately before `jdk.GarbageCollection` events with `cause="G1 Compaction Pause"` or `cause="G1 Evacuation Pause"` with long pauses, the aborts are directly causing old-gen pressure — the concurrent mark never finished to identify dead old-gen regions, so the old gen filled up. Cross-reference with `jdk.G1AdaptiveIHOP` `threshold` field trending upward — if IHOP keeps rising, the adaptive algorithm is compensating for repeated failed mark cycles by starting marking earlier and earlier.
+
+**Fleet-level signal**: one abort or overflow event in isolation is not actionable. The signal is the rate — track `jdk.G1ConcurrentMarkInterrupt` event count per 5-minute window across a fleet. A sudden increase across multiple JVMs on the same deployment version indicates a workload change (e.g., larger object graph, higher allocation rate) that is systematically breaking concurrent marking.
+
+**Cross-event correlation**: join on `gcId` with `jdk.OldGarbageCollection` to identify which concurrent mark cycle was interrupted; if `jdk.OldGarbageCollection` for the same `gcId` does not appear (because the cycle was aborted before remark), the absence itself confirms the abort was total. Join by time window with `jdk.G1HeapSummary` to see heap state at abort time — high old-gen occupancy at abort time, combined with `type="abort"`, is the signal for IHOP miscalibration. Join with `jdk.G1AdaptiveIHOP` on the subsequent `gcId` — after an abort, the adaptive IHOP should trigger a new cycle sooner; if the inter-cycle gap is not shrinking, IHOP is not adjusting, which points to a configuration issue (`-XX:-G1UseAdaptiveIHOP`).
+
+#### Why existing events don't cover this
+
+- `jdk.OldGarbageCollection`: records when a concurrent mark cycle **completes** (remark + cleanup phases). It does not fire when the cycle is aborted. An abort produces no `jdk.OldGarbageCollection` event for that `gcId`.
+- `jdk.GarbageCollection` with `cause="Concurrent Mode Failure"` (CMS terminology): G1 does not use this cause string. The `_gc_tracer_cm->report_concurrent_mode_failure()` call that follows the "Concurrent Mark Abort" log line updates internal stats but does not emit a JFR event.
+- `jdk.G1BasicIHOP` / `jdk.G1AdaptiveIHOP`: record IHOP threshold updates at the start of a concurrent cycle (or at its end if completed). They do not record mid-cycle interruptions.
+- No existing JFR event records `has_aborted()` becoming true, or `reset_marking_for_restart()` being called. These are invisible in JFR today.
+
+#### External references
+
+[JEP 346: Promptly Return Unused Committed Memory from G1](https://openjdk.org/jeps/346) — describes G1's concurrent marking lifecycle and the conditions under which the concurrent cycle can be aborted by young GC activity. The abort path (`has_aborted()`) is the same code path regardless of abort cause.
+
+[`g1ConcurrentMark.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp) — `concurrent_cycle_end()` at line 1274 (abort site) and `G1CMTask::handle_abort()` at line 2744 (overflow-reset site).
+
+#### Open questions / upstream concerns
+
+1. **GCId availability at Site 2**: `G1CMTask::handle_abort()` is called from within a concurrent marking worker task. The `GCIdMark` is established in `G1ConcurrentMarkThread::run_service()` and should be visible to worker threads via the thread-local GCId mechanism. This should be verified during implementation — if `GCId::current()` returns `GCId::undefined()` from the worker thread context, the `gcId` field would need to be passed explicitly through the call chain.
+2. **Abort reason**: the `has_aborted()` flag is set from multiple call sites (`abort()` is called on young-GC preemption, humongous allocation forcing a new cycle, and explicit GC requests). A future `abortReason` field would require threading a `G1AbortReason` enum through `abort()` — non-trivial but valuable. Defer to a follow-up PR.
+
+---
+
+### 18. jdk.G1FullGCEscalation
+
+#### Verdict
+
+**Propose.** All three emission sites are `log_info(gc,ergo)` — production-visible, no log-level promotion needed. The three branches of G1's Full GC escalation are unified under one event with an `escalationPath` discriminator. `jdk.GarbageCollection` already records that a Full GC ran; this event records **why** it was triggered and which escalation path was taken — information that is currently only in `-Xlog:gc,ergo=info` output and has no JFR representation. No prerequisites.
+
+#### The question it answers
+
+"Why did G1 resort to a Full GC — was it an internal upgrade from a failed young collection, a first-attempt allocation failure, or a maximal compaction because a first full GC attempt also failed?"
+
+G1 avoids Full GC as a last resort. When it occurs, it can come from three distinct paths, each with different root causes and remediation steps:
+
+1. **Upgrade** (`upgrade_to_full_collection`): a young or mixed GC could not evacuate all regions, so G1 promotes the entire pause to a Full GC with soft-reference clearing. Root cause: evacuation failure during a young/mixed pause.
+2. **Standard compaction** (`satisfy_failed_allocation_helper`, `maximal_compaction=false`): a mutator allocation failed and a first-attempt full compaction was tried.
+3. **Maximal compaction** (`satisfy_failed_allocation_helper`, `maximal_compaction=true`): the standard compaction also failed to satisfy the allocation, so a second Full GC with maximal compaction (clears all soft references, most aggressive reclaim) was triggered.
+
+Today `jdk.GarbageCollection` records `cause="_g1_compaction_pause"` for all three paths — the cause string is identical, so a consumer cannot distinguish an upgrade (evacuation failure) from a maximal-compaction retry (near-OOM). This event exposes the distinguishing information.
+
+#### Emission points
+
+All three sites are in [`g1CollectedHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp):
+
+**Site 1 — `upgrade_to_full_collection()` (line ~954)**:
+```cpp
+void G1CollectedHeap::upgrade_to_full_collection() {
+  GCCauseSetter compaction(this, GCCause::_g1_compaction_pause);
+  log_info(gc, ergo)("Attempting full compaction clearing soft references");
+  do_full_collection(0, true /* clear_all_soft_refs */, false /* do_maximal_compaction */);
+}
+```
+Called when a young/mixed GC pause fails to evacuate all regions (evacuation failure). `allocationWordSize` = 0 (this is not an allocation-driven trigger).
+
+**Site 2 — `satisfy_failed_allocation_helper()`, standard branch (line ~1062)**:
+```cpp
+} else {
+  log_info(gc, ergo)("Attempting full compaction");
+  do_full_collection(word_size, false /* clear_all_soft_refs */, false);
+}
+```
+Called on first allocation failure after a failed young GC. `word_size` is the requested allocation size in words.
+
+**Site 3 — `satisfy_failed_allocation_helper()`, maximal branch (line ~1059)**:
+```cpp
+if (maximal_compaction) {
+  log_info(gc, ergo)("Attempting maximal full compaction clearing soft references");
+  do_full_collection(word_size, true /* clear_all_soft_refs */, true /* do_maximal_compaction */);
+}
+```
+Called as a second attempt when Site 2's full GC still could not satisfy the allocation. This is the last resort before OOM.
+
+**Cadence**: Infrequent — fires only when Full GC is triggered. In a healthy deployment, zero events per day is expected. Site 3 (maximal compaction) is particularly rare and its appearance indicates near-OOM conditions.
+
+**Thread**: VM thread (safepoint, allocation failure path).
+
+#### Fields
+
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Timestamp of the escalation decision. Subtract from the subsequent `jdk.GarbageCollection` (Full) `startTime` to measure the decision-to-execution delay. Join by time window with `jdk.EvacuationFailed` to confirm the upgrade path root cause. |
+| `escalationPath` | String discriminator: `"upgrade"` (Site 1 — evacuation failure during young/mixed GC), `"compaction"` (Site 2 — first-attempt allocation failure), `"maximal_compaction"` (Site 3 — second-attempt, last resort) | No | **Primary diagnosis field.** `"upgrade"` = evacuation failure is the root cause; investigate `jdk.EvacuationFailed` on the preceding `gcId`. `"compaction"` = allocation failure; look at `allocationBytes` and heap state. `"maximal_compaction"` = the first full GC failed to reclaim enough — heap is genuinely exhausted; OOM risk if this fires without subsequent free-space recovery. |
+| `clearSoftRefs` | Boolean: whether soft references are cleared in this Full GC (`true` for upgrade and maximal paths, `false` for standard compaction) | No | `true` = the JVM is reclaiming everything possible, including soft-reference caches (e.g., class loader caches, string dedup tables, intern tables). Application code relying on soft references for caching will observe sudden cache misses after this GC. If `clearSoftRefs=true` fires regularly, soft-reference pressure is consuming heap that should be available to the live set — investigate soft-reference retention with heap profiling. |
+| `allocationBytes` | `word_size * HeapWordSize` — requested allocation size in bytes (Sites 2 and 3 only) | Yes — null on upgrade path (`word_size=0`) | The size of the allocation that triggered the Full GC. Large `allocationBytes` (e.g., > 1MB) = a humongous allocation exhausted the heap. Zero `allocationBytes` = the escalation was not allocation-driven (upgrade path). If `allocationBytes` is moderate (< 1MB) but the Full GC still fires, the heap is so nearly full that even small allocations cannot be satisfied — `-Xmx` is too small for the live set. |
+| `gcId` | `GCId::current()` — the GC ID of the Full GC that this escalation will trigger. The `GCIdMark` is created inside `do_full_collection()` immediately after the log site. | No | The `gcId` established here is the same `gcId` that appears in the subsequent `jdk.GarbageCollection` (Full) event. This is the join key: correlate this escalation event with the outcome (pause duration, heap freed) in `jdk.GarbageCollection` on the same `gcId`. **Implementation note**: since `GCIdMark` is created inside `do_full_collection()`, the escalation event must either read `GCId::peek()` (the next ID, not yet assigned) or be emitted from inside `do_full_collection()` before the collection executes. The cleaner approach is to emit from inside `do_full_collection()` and use `GCId::current()` after the `G1GCMark` constructor runs. |
+| `gcCause` | `gc_cause()` — always `GCCause::_g1_compaction_pause` for all three paths (set by `GCCauseSetter` at each site) | No | Constant at `_g1_compaction_pause` for all three paths — not useful for distinguishing escalation type (use `escalationPath`). Included for completeness and for consumers who filter JFR events by GC cause. The value `"G1 Compaction Pause"` will be identical across all three paths — `escalationPath` is the differentiator. |
+
+#### What it is used for
+
+**Evacuation failure root cause** (`escalationPath="upgrade"`): G1 upgraded a young or mixed GC to a Full GC because evacuation failed — it ran out of free regions to copy live objects into. The `jdk.EvacuationFailed` event on the immediately preceding `gcId` confirms this. Root causes: heap too full, humongous object allocation consuming too many contiguous regions, or `G1ReservePercent` (the emergency buffer) set too low. Action: increase `-Xmx`, reduce allocation rate, or increase `G1ReservePercent` (default 10%).
+
+**Standard allocation failure** (`escalationPath="compaction"`): a mutator allocation could not be satisfied even after a young GC. `allocationBytes` tells you what size triggered it. If `allocationBytes` is large (> `G1HeapRegionSize / 2`), this is a humongous allocation pressure case — the heap has many live regions but no contiguous free span large enough. Action: increase `-Xmx` or reduce humongous object creation.
+
+**Last-resort maximal compaction** (`escalationPath="maximal_compaction"`): the first Full GC attempt (Site 2) did not free enough heap to satisfy the allocation. A second, more aggressive Full GC with soft-reference clearing and maximal compaction was triggered. This is a near-OOM signal. If `allocationBytes` is small (< 1KB) relative to heap size, the live set is genuinely too large for the configured `-Xmx`. If the subsequent `jdk.GarbageCollection` (Full) shows no improvement in heap occupancy, OOM is imminent on the next allocation.
+
+**Escalation frequency trend**: track this event's count per 5-minute window. Zero = healthy. One per hour = investigate. Daily = expected only for workloads with infrequent large batch operations. One per minute = heap sizing is wrong for this workload.
+
+**Cross-event correlation**: join on `gcId` with `jdk.GarbageCollection` (Full) to get the pause duration and heap freed after the escalation. If `escalationPath="maximal_compaction"` and the subsequent Full GC frees < 5% of heap, OOM will follow within the next few allocation cycles — `allocationBytes` and heap occupancy tell you how many cycles remain. Join by time window with `jdk.EvacuationFailed` (`gcId` of the preceding young/mixed GC) when `escalationPath="upgrade"` to quantify how many objects failed to evacuate and from which region types. Join with `jdk.G1HeapSummary` on `gcId` to get heap state immediately before and after the Full GC — the difference shows actual reclaim from the compaction.
+
+#### Why existing events don't cover this
+
+- `jdk.GarbageCollection` with `cause="G1 Compaction Pause"`: this cause is identical for all three escalation paths (`upgrade`, `compaction`, `maximal_compaction`). It does not record `escalationPath`, `clearSoftRefs`, or `allocationBytes`. An operator seeing repeated Full GCs cannot tell from `jdk.GarbageCollection` alone whether they are upgrade-path (evacuation failure) or maximal-compaction-path (near-OOM) events — the diagnostic response is completely different.
+- `jdk.EvacuationFailed`: records that evacuation failed during a young/mixed GC, but does not record whether G1 upgraded to a Full GC as a result (the upgrade is a subsequent decision in a different code path).
+- `jdk.G1HeapSummary`: records heap state snapshots before and after a GC, but not the escalation reason or `clearSoftRefs` flag.
+- No existing JFR event exposes the `escalationPath` discriminator, `clearSoftRefs`, or `allocationBytes` from the three `satisfy_failed_allocation` / `upgrade_to_full_collection` decision points. The distinction between these paths is currently only visible in `-Xlog:gc,ergo=info` output.
+
+#### External references
+
+[Oracle G1 GC Tuning Guide](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-g1-garbage-collector1.html):
+
+> "G1 GC compacts the heap by performing a full garbage collection (Full GC), but this is often detrimental to performance. G1 is designed to avoid Full GCs. ... If the heap is not large enough to accommodate the survivor space plus the objects promoted from young space, evacuation fails, and a Full GC is triggered."
+
+[`g1CollectedHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp) — `upgrade_to_full_collection()` at line ~952 (upgrade path) and `satisfy_failed_allocation_helper()` at lines ~1059–1062 (allocation-failure paths).
+
+#### Open questions / upstream concerns
+
+1. **GCId timing**: the `GCIdMark` that assigns the `gcId` for the Full GC is created inside `do_full_collection()`, which is called after the log site. The cleanest implementation is to emit the event from inside `do_full_collection()`, after the `G1GCMark` constructor (which creates the `GCIdMark`) but before `collector.collect()` executes. This gives the correct `gcId` and ensures the escalation event appears in the recording before the Full GC outcome events. The three escalation parameters (`escalationPath`, `clearSoftRefs`, `allocationBytes`) must be passed into `do_full_collection()` or derived from its existing parameters (`clear_all_soft_refs` and `do_maximal_compaction` are already parameters; `word_size` is already a parameter and determines `allocationBytes`). This requires adding an `escalationPath` string or enum parameter to `do_full_collection()` — a small but real signature change.
+2. **`upgrade_to_full_collection()` vs. `satisfy_failed_allocation_helper()`**: these are called from different contexts. `upgrade_to_full_collection()` is called from the GC thread during a young/mixed pause (already at a safepoint). `satisfy_failed_allocation_helper()` is called from the VM thread during allocation failure handling (also at a safepoint but a different entry). The `escalationPath` value is the distinguisher — no additional context change is needed.
+3. **Future: `allocationBytes` on upgrade path**: today `upgrade_to_full_collection()` passes `word_size=0` to `do_full_collection()`. The triggering young/mixed GC `gcId` is the actual pointer to the root cause. Consider adding the preceding `gcId` as a field (`triggeringGcId`) rather than `allocationBytes` for the upgrade path, so a consumer can directly join to `jdk.EvacuationFailed`. Defer to follow-up.
+
+---
+
 ## Appendix: Source File Reference
 
 All source links use `https://github.com/openjdk/jdk/blob/master/` as base. Line numbers are approximate for functions that span ranges; exact lines are given where a specific log statement or code point is the anchor.
@@ -2191,5 +2382,7 @@ All source links use `https://github.com/openjdk/jdk/blob/master/` as base. Line
 | jdk.PSAdaptiveSizePolicy | [`src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp), [`src/hotspot/share/gc/parallel/psYoungGen.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psYoungGen.cpp) |
 | jdk.ShenandoahOldEvacuation | [`src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp) |
 | jdk.ShenandoahAdaptiveCSetSelection | [`src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp) |
+| jdk.G1ConcurrentMarkInterrupt | [`src/hotspot/share/gc/g1/g1ConcurrentMark.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp) |
+| jdk.G1FullGCEscalation | [`src/hotspot/share/gc/g1/g1CollectedHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp) |
 | jdk.StringDeduplicationStatistics (removed) | [`src/hotspot/share/gc/shared/stringdedup/stringDedupStat.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shared/stringdedup/stringDedupStat.cpp) |
 | jdk.ShenandoahCardStatistics (blocked) | [`src/hotspot/share/gc/shenandoah/shenandoahCardStats.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahCardStats.cpp) |
