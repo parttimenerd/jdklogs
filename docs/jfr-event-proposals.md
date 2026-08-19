@@ -2,7 +2,7 @@
 
 **Status**: Working document — 18 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 76)
+**Last updated**: 2026-08-19 (pass 77)
 
 ---
 
@@ -228,38 +228,67 @@ No JFR event fires at the GC decision point — the moment the GC subsystem deci
 
 #### Emission point
 
-Two sites, one per GC implementation:
+Two sites, one per GC implementation — but the JFR event does **not** fire at the `log_info` line. The throw happens in a different function on a different thread. Understanding the two-phase path is required to implement this correctly.
 
-**G1**: `G1CollectedHeap::satisfy_failed_allocation()`  
-[`g1CollectedHeap.cpp:1110`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1110)  
-Log: `log_info(gc)("GC Overhead Limit exceeded too often (%zu).", GCOverheadLimitThreshold)`
+**Phase 1 — GC decision (VM thread, at safepoint)**
 
-**Parallel GC**: `ParallelScavengeHeap::satisfy_failed_allocation()`  
-[`parallelScavengeHeap.cpp:507`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L507)  
-Log: `log_info(gc)("GC Overhead Limit exceeded too often (%zu).", GCOverheadLimitThreshold)` (identical string)
+`satisfy_failed_allocation()` runs on the VM thread, asserted at safepoint (`assert_at_safepoint_on_vm_thread()`). When `gc_overhead_limit_exceeded()` returns true it emits the `log_info` line and returns `nullptr`. This is the decision point — but it is not where the JFR event fires, because the OOM object is not thrown here.
 
-**Counter-update log** (debug-tier, NOT the event site):  
+**G1**: [`g1CollectedHeap.cpp:1110`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1110) — `satisfy_failed_allocation()` returns `nullptr`  
+**Parallel GC**: [`parallelScavengeHeap.cpp:507`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L507) — identical pattern
+
+**Phase 2 — OOM throw (mutator thread, outside safepoint)**
+
+The `nullptr` is returned to the allocating application thread, which re-enters the allocation slow path and reaches `MemAllocator::Allocation::check_out_of_memory()`. That function throws `Universe::out_of_memory_error_gc_overhead_limit()` — a pre-allocated `OutOfMemoryError` object (no heap allocation needed for the throw). This is the correct JFR emission site:
+
+```cpp
+// memAllocator.cpp — on the mutator thread:
+void MemAllocator::Allocation::check_out_of_memory() {
+  if (obj() != nullptr) return;
+  // ...
+  // JFR event fires here — before the throw:
+  THROW_OOP_(Universe::out_of_memory_error_gc_overhead_limit(), true);
+}
+```
+
+**Thread at JFR emission**: mutator (JavaThread), not the VM thread. Not inside a safepoint (`!Universe::heap()->is_stw_gc_active()` is asserted). This is the same thread that will propagate the exception.
+
+**Why the JFR event belongs at Phase 2, not Phase 1**: the `satisfy_failed_allocation()` site on the VM thread is technically feasible for JFR emission, but it fires before the GC fields (`long_term_gc_time_ratio`, `free_space_percent`) are re-read for the event. More importantly, the Phase 2 site is the canonical "OOM is happening now" moment — it is consistent with `jdk.JavaErrorThrow` semantics and with JVMTI's `post_resource_exhausted()` call which fires at the same site.
+
+**Fields available at Phase 2**: the GC policy objects (`_policy` for G1, `_size_policy` for Parallel) are accessible through the heap singleton (`Universe::heap()`), so `gcTimePercent` and `freeSpacePercent` can be read at the throw site by casting to the concrete heap type.
+
+**Counter-update log** (debug-tier, reference only, NOT the event site):  
 G1 [`g1CollectedHeap.cpp:1006`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1006): `log_debug(gc)("GC Overhead Limit: GC Time %f Free Space %f Counter %zu", ...)`  
 Parallel [`parallelScavengeHeap.cpp:440`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp#L440): `log_debug(gc)("GC Overhead Limit: GC Time %f Free Space Young %f Old %f Counter %zu", ...)`
 
-**Call chain (G1)**:
+**Call chain (G1, end-to-end)**:
 ```
-Allocating application thread
-  → allocation fast-path failure
-  → attempt_allocation_humongous() or expand_heap_and_attempt_allocation()
-  → satisfy_failed_allocation()   [g1CollectedHeap.cpp:1110](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L1110)
-  → fires when gc_overhead_limit_exceeded() returns true
+Mutator thread: allocation fast-path fails
+  → HeapAllocator::mem_allocate_slow()
+    → G1CollectedHeap::satisfy_failed_allocation()   [VM thread, safepoint]
+      → gc_overhead_limit_exceeded() == true
+      → log_info(gc)("GC Overhead Limit exceeded too often")
+      → return nullptr
+  → MemAllocator::Allocation::check_out_of_memory()  [mutator thread, no safepoint]
+      → ← JFR event emitted here
+      → THROW_OOP_(Universe::out_of_memory_error_gc_overhead_limit())
 ```
 
-**Cadence**: Once per OOM throw. At most once per JVM lifetime unless `-XX:-ExitOnOutOfMemoryError` is set, in which case the JVM exits on the first occurrence.
+**Cadence**: Once per OOM throw. At most once per JVM lifetime unless `-XX:-ExitOnOutOfMemoryError` is set.
 
-**Thread**: Allocating application thread (not a GC thread).
+#### JFR write safety at the throw site
 
-**GCOverheadLimit feature**: Implemented in G1 via [JDK-8212084](https://bugs.openjdk.org/browse/JDK-8212084), [PR #27950](https://github.com/openjdk/jdk/pull/27950), merged JDK 26. Also present in Parallel GC.
+JFR can safely write events at the Phase 2 throw site. Three reasons:
 
-**Counter-update vs. throw-point distinction**: `update_gc_overhead_counter()` ([`g1CollectedHeap.cpp:995`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)) runs at each safepoint and logs the raw counter at `log_debug(gc)`. The JFR event belongs at the throw point — `satisfy_failed_allocation()` line 1109 — where `gc_overhead_limit_exceeded()` returns true and control flow is about to return null to the allocating thread. The `long_term_gc_time_ratio` and `free_space_percent` locals are scoped inside `update_gc_overhead_counter()` and are NOT directly in scope at line 1109; the JFR implementation must re-read them at the emission site (both are cheap accessor calls — see field table below).
+1. **JFR uses native memory, not the Java heap.** Write buffers are allocated from native memory via `create_mspace<>()` during JFR initialisation. An event write at OOM time does not touch the Java heap — no recursive allocation failure is possible.
+2. **Buffers are thread-local and pre-allocated.** `JfrStorage::acquire_thread_local()` retrieves from a per-thread buffer pool established at thread start. No allocation occurs at event emit time — the buffer already exists.
+3. **The mutator thread is live and outside a safepoint.** Thread-local JFR writes are designed exactly for this context. This is the same mechanism used by `jdk.ObjectAllocationOutsideTLAB` and `jdk.AllocationRequiringGC`, both of which fire on mutator threads during allocation slow paths.
 
-**G1 counter update + throw point** ([`g1CollectedHeap.cpp:995-1111`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)):
+The pre-allocated `Universe::out_of_memory_error_gc_overhead_limit()` object means the throw itself also requires no heap allocation. The combination makes this one of the safer OOM instrumentation points in the JVM.
+
+**Counter-update vs. throw-point distinction**: `update_gc_overhead_counter()` ([`g1CollectedHeap.cpp:995`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)) runs at each safepoint and logs the raw counter at `log_debug(gc)`. The JFR event belongs at the throw point in `check_out_of_memory()`, not at the `log_info` site in `satisfy_failed_allocation()`. The `long_term_gc_time_ratio` and `free_space_percent` locals are scoped inside `update_gc_overhead_counter()` and are NOT directly in scope at the throw site; the JFR implementation must re-read them via the heap singleton (both are cheap accessor calls — see field table below).
+
+**G1 counter update + decision point** ([`g1CollectedHeap.cpp:995-1111`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L995)):
 
 ```cpp
 // Called at each safepoint (per-GC-pause counter update):
@@ -280,20 +309,23 @@ void G1CollectedHeap::update_gc_overhead_counter() {
   }
 }
 
-// Called at allocation failure (throw point):
+// Called at allocation failure (decision point, VM thread):
 // satisfy_failed_allocation() at g1CollectedHeap.cpp:1076:
 update_gc_overhead_counter();   // Update counter first
 // ... attempt final GC ...
 // At line 1109: check and log:
 if (gc_overhead_limit_exceeded()) {  // _gc_overhead_counter >= GCOverheadLimitThreshold (=5)
   log_info(gc)("GC Overhead Limit exceeded too often (%zu).", GCOverheadLimitThreshold);
-  // ← JFR event fires HERE; must re-read long_term_gc_time_ratio and free_space_percent
-  //   via _policy->analytics()->long_term_gc_time_ratio() and percent_of(...) — not in scope here
 }
-return nullptr;  // OOM thrown to allocating thread
-```
+return nullptr;  // Returns nullptr to mutator thread — OOM not yet thrown
 
-The JFR event fires at the `log_info` site. To access `long_term_gc_time_ratio` and `free_space_percent` at the JFR emission point (line 1109), the implementation needs to either: (a) re-read them from the policy object at line 1109 — `_policy->analytics()->long_term_gc_time_ratio()` and `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())` are both cheap reads accessible at that point; or (b) modify `update_gc_overhead_counter()` to store the values as fields. Option (a) is simpler — both accessor calls are already present in `update_gc_overhead_counter()` and can be repeated inline at the JFR emission site.
+// Later, on the mutator thread (memAllocator.cpp):
+// check_out_of_memory() — JFR event fires here, before throw:
+// gcTimePercent = ((G1CollectedHeap*)Universe::heap())->policy()->analytics()
+//                   ->long_term_gc_time_ratio() * 100
+// freeSpacePercent = percent_of(heap->num_available_regions() * GrainBytes, heap->max_capacity())
+THROW_OOP_(Universe::out_of_memory_error_gc_overhead_limit(), true);
+```
 
 #### Fields
 
@@ -345,9 +377,9 @@ Oracle JDK 26 documentation on `GCOverheadLimit`:
 #### Open questions / upstream concerns
 
 1. **Resolved: single combined event with nullable free-space fields.** G1 and Parallel have different free-space shapes (`freeSpacePercent` for G1; `freeSpaceYoungPercent` + `freeSpaceOldPercent` for Parallel). The nullable pattern is appropriate here: the `collector` field makes null semantics self-documenting, and there is only one event per JVM lifetime in most cases. Separate events (`jdk.G1GCOverheadLimitExceeded` + `jdk.ParallelGCOverheadLimitExceeded`) are cleaner but double the JFR metadata boilerplate for an event that fires at most once. The combined event with `collector="G1"` or `collector="Parallel"` is the chosen approach for the upstream submission.
-2. **Resolved**: `gcId` uses `GCId::peek() - 1` at the throw point. `GCId::peek()` returns `_next_id` (the id to be assigned to the NEXT GC), so `peek() - 1` is the last assigned GC id. If `peek() == 0` (no GC has run), the field is undefined. At `satisfy_failed_allocation()` the executing thread is the allocating application thread, so `GCId::current()` would assert (it is only valid on a GC thread); `peek()-1` is the correct mechanism. This is a well-established JFR pattern.
+2. **Resolved**: `gcId` uses `GCId::peek() - 1` at the throw point. `GCId::peek()` returns `_next_id` (the id to be assigned to the NEXT GC), so `peek() - 1` is the last assigned GC id. If `peek() == 0` (no GC has run), the field is undefined. At `check_out_of_memory()` the executing thread is the mutator thread, so `GCId::current()` would assert (it is only valid on a GC thread); `peek()-1` is the correct mechanism. This is a well-established JFR pattern used by other mutator-thread events.
 3. **Resolved: drop `consecutiveViolations`**. The counter always equals `GCOverheadLimitThreshold` at throw time — any other value is impossible since the throw only occurs when `_gc_overhead_counter >= GCOverheadLimitThreshold`. Furthermore `GCOverheadLimitThreshold = 5` is a `develop` flag and is not configurable in production builds. The field therefore carries exactly zero information at throw time: it is always 5. Keeping it risks misleading users into thinking it varies. The schema is adequately self-documenting without it: the event fires exactly once when the OOM is thrown, which already implies the threshold was reached. Removed from the proposed schema.
-4. **Resolved: G1 field scoping**: `long_term_gc_time_ratio` and `free_space_percent` are locals inside `update_gc_overhead_counter()` and out of scope at the throw point (line 1109). Re-read them at the JFR emission site: `_policy->analytics()->long_term_gc_time_ratio()` and `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())`. Parallel GC does not have this issue — `_size_policy` is a class member accessible throughout `ParallelScavengeHeap`.
+4. **Resolved: field scoping at the throw site**: `long_term_gc_time_ratio` and `free_space_percent` are locals inside `update_gc_overhead_counter()` and are not in scope at `check_out_of_memory()`. Re-read them at the JFR emission site via the heap singleton: `((G1CollectedHeap*)Universe::heap())->policy()->analytics()->long_term_gc_time_ratio()` and `percent_of(heap->num_available_regions() * G1HeapRegion::GrainBytes, heap->max_capacity())`. Both are cheap reads. Parallel GC does not have this issue — `_size_policy` is a class member accessible throughout `ParallelScavengeHeap` and readable from `check_out_of_memory()` via the heap singleton cast.
 
 ---
 
@@ -2367,7 +2399,7 @@ All source links use `https://github.com/openjdk/jdk/blob/master/` as base. Line
 | Event | Primary source file |
 |---|---|
 | jdk.NativeHeapTrim | [`src/hotspot/share/runtime/trimNativeHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/trimNativeHeap.cpp) |
-| jdk.GCOverheadLimitExceeded | [`src/hotspot/share/gc/g1/g1CollectedHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp), [`src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp) |
+| jdk.GCOverheadLimitExceeded | [`src/hotspot/share/gc/g1/g1CollectedHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp), [`src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp), [`src/hotspot/share/gc/shared/memAllocator.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shared/memAllocator.cpp) (throw site) |
 | jdk.ShenandoahMMU | [`src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp) |
 | jdk.ShenandoahCollectionDecision | [`src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp), [`src/hotspot/share/gc/shenandoah/heuristics/shenandoahHeuristics.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahHeuristics.cpp) |
 | jdk.ShenandoahReclaimProgress | [`src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMetrics.cpp) |
