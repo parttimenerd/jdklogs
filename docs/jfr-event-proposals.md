@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 68)
+**Last updated**: 2026-08-19 (pass 69)
 
 ---
 
@@ -1126,6 +1126,8 @@ A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the t
 
 The Oracle G1 Tuning Guide explicitly documents `G1ConcRefinementThreads` and `Pending Cards` as tuning controls for the `Update RS` pause phase — yet the metrics behind those controls are only accessible at `log_debug` level. This is the core upstream argument: a documented tuning control whose observable data requires debug logging is an observability design gap. **Recommended approach for upstream submission**: promote `print_refinement_stats()` from `log_debug(gc,refine)` to `log_info(gc,refine)` in the same PR. The promotion is justified by the same Oracle tuning guide references.
 
+**Source stability note**: `g1ConcurrentRefine.cpp` is **actively changing** — JDK-8382089 (state machine refactor, 2026-05-04) and JDK-8383794 (renamed sweep duration helper, 2026-05-05) and JDK-8387303 (Atomic API conversion, 2026-06-29) all touched this file in 2026. JDK-8342382 (JEP 522 throughput improvements, 2025-09) also modified it. The `print_refinement_stats()` function and its log format are stable (confirmed in current source), but the sweep state machine structure around `complete_refinement()` and `handle_ongoing_refinement_at_safepoint()` continues to evolve. Any implementation should verify the call sites against the current main branch before submission.
+
 #### The question it answers
 
 "Is G1's concurrent card refinement keeping up with the mutator write rate, or is it accumulating a backlog that will inflate pause times?"
@@ -1134,15 +1136,13 @@ G1's concurrent refinement thread processes dirty card queue entries between GC 
 
 #### Emission points
 
-**Normal sweep completion**:  
-`G1ConcurrentRefineSweepState::complete_refinement()`  
-[`g1ConcurrentRefine.cpp:377`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L377)
+**Source file**: [`g1ConcurrentRefine.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp)
 
-**Sweep interrupted at safepoint**:  
-`G1ConcurrentRefineSweepState::handle_ongoing_refinement_at_safepoint()`  
-[`g1ConcurrentRefine.cpp:340`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L340)
+Two sites both call `print_refinement_stats()`, which emits the log line:
+- **Normal sweep completion**: fires when the sweep state machine finishes processing the dirty-card queue without interruption.
+- **Sweep interrupted at safepoint**: fires when a safepoint interrupts an in-progress sweep mid-pass; the partial results are still recorded.
 
-Both call `print_refinement_stats()` at [`g1ConcurrentRefine.cpp:301`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L301). **Exact log message**:
+**Exact log message**:
 ```
 log_debug(gc, refine)("Refinement took %.2fms (pre-sweep %.2fms card refine %.2fms) "
     "(scanned %zu clean %zu (%.2f%%) not_clean %zu (%.2f%%) not_parsable %zu "
@@ -1150,14 +1150,6 @@ log_debug(gc, refine)("Refinement took %.2fms (pre-sweep %.2fms card refine %.2f
     ...);
 ```
 Log tag: `log_debug(gc,refine)` at both sites.
-
-**Call chain**:
-```
-G1ConcurrentRefineThread control loop
-  → sweep state machine
-  → complete_refinement()   [g1ConcurrentRefine.cpp:377](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L377)   (normal)
-  → handle_ongoing_refinement_at_safepoint()   [g1ConcurrentRefine.cpp:340](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L340)   (interrupted)
-```
 
 **Cadence**: Once per refinement sweep. Can fire multiple times between GC pauses (each sweep is one pass through the dirty-card queue).
 
@@ -1176,10 +1168,10 @@ G1ConcurrentRefineThread control loop
 | `cardsScanned` | `stats->cards_scanned()` — total dirty cards examined: equals `cardsClean + cardsNotClean + cardsNotParsable + cardsNoCrossRegion + cardsStillRefersToCset` (approximately; some edge categories may differ) | No | **Denominator for all card ratios**: `cardsClean / cardsScanned` = wasted-scan fraction; `cardsNotClean / cardsScanned` = effective work fraction; `cardsNoCrossRegion / cardsScanned` = write-churn fraction. A sweep with small `cardsScanned` but large `cardsPending` = many cards arrived too late to be processed this sweep (high write rate vs. sweep cadence). Use `cardsScanned / duration` as the sweep throughput in cards/ms and compare across consecutive events to detect degradation. |
 | `cardsClean` | `stats->cards_clean()` — cards already clean when scanned (no work needed) | No | **Wasted-scan ratio**: `cardsClean / cardsScanned > 50%` = more than half of scanned cards were already clean when the refinement thread arrived. Two distinct root causes: (a) **GC-phase cleanup**: the GC pause processed the same cards before the concurrent thread reached them — expected and harmless; (b) **Thread over-count**: too many refinement threads racing to process the same cards, each finding them already clean. Distinguish by comparing with `G1ConcRefinementThreads` setting — if `threadsWanted` from `jdk.G1ConcurrentRefinementPolicy` is much lower than `G1ConcRefinementThreads`, the policy is not using all available threads and the clean-card ratio reflects GC-phase cleanup (case a). If `threadsWanted ≈ G1ConcRefinementThreads` and ratio is still high, consider reducing `G1ConcRefinementThreads` to reduce redundant work. |
 | `cardsNotClean` | `stats->cards_not_clean()` — cards that required actual processing (had cross-region references to update) | No | **Effective work metric**: `cardsNotClean / cardsScanned` = effective work ratio; this should be high (> 80%) for healthy refinement — if it is low (< 50%), most scanned cards were already clean or false dirty, meaning thread time is being wasted. `cardsNotClean / cardRefineMs` = refinement throughput in cards/ms; declining throughput with stable `cardsNotClean` = per-card processing is slowing (investigate object graph complexity or lock contention). Growing `cardsNotClean` across sweeps while `threadsWanted` is maxed = write rate has increased beyond refinement capacity — cross-reference `dirtiedCardRate` from `jdk.G1ConcurrentRefinementPolicy`. |
-| `cardsNotParsable` | `stats->cards_not_parsable()` — cards that returned `G1RemSet::CouldNotParse` and were **re-dirtied for retry** (source: `g1ConcurrentRefineSweepTask.cpp:75-79`): the card region was in an unparsable state so the thread put the card back as dirty for next sweep. | No | **Retry-storm indicator**: a single non-zero sweep is transient and ignorable. Sustained non-zero across ≥ 3 consecutive sweeps indicates the refinement thread repeatedly encounters regions in mid-transition — typically caused by concurrent humongous object allocation (regions skip to HUMONGOUS state between scans). **Action if sustained**: confirm via `-Xlog:gc+humongous=debug`; if humongous allocation is the cause, tune `-XX:G1HeapRegionSize` upward to reduce the number of regions a humongous object spans, or reduce humongous allocations if possible. |
-| `cardsNoCrossRegion` | `stats->cards_no_cross_region()` — cards where the mutator changed all cross-region references AFTER dirtying the card, making the card a false dirty. From `G1RemSet::NoCrossRegion` result: [`g1RemSet.hpp:122`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1RemSet.hpp#L122) "There is no interesting reference in the card any more. The mutator changed all references to such after dirtying the card." | No | **Write churn indicator**: `cardsNoCrossRegion / cardsScanned` > 20% = significant fraction of refinement work is wasted on cards whose cross-region references were overwritten before refinement ran (allocate-and-immediately-overwrite patterns common in producer/consumer or cache-eviction workloads). These cards consumed scan CPU without contributing to remembered-set accuracy. **Action**: this metric cannot be tuned via GC flags — it reflects application write patterns. If it dominates refinement cost, profile hot write-barrier paths in the application; reduce object graph edge churn (e.g., avoid storing cross-region references in frequently-mutated fields). Alternatively, accept the overhead if the write pattern is correct — the refinement thread will process and discard these cards quickly. |
+| `cardsNotParsable` | `stats->cards_not_parsable()` — cards that returned `G1RemSet::CouldNotParse` and were **re-dirtied for retry**: the card region was in an unparsable state so the thread put the card back as dirty for next sweep. | No | **Retry-storm indicator**: a single non-zero sweep is transient and ignorable. Sustained non-zero across ≥ 3 consecutive sweeps indicates the refinement thread repeatedly encounters regions in mid-transition — typically caused by concurrent humongous object allocation (regions skip to HUMONGOUS state between scans). **Action if sustained**: confirm via `-Xlog:gc+humongous=debug`; if humongous allocation is the cause, tune `-XX:G1HeapRegionSize` upward to reduce the number of regions a humongous object spans, or reduce humongous allocations if possible. |
+| `cardsNoCrossRegion` | `stats->cards_no_cross_region()` — cards where the mutator changed all cross-region references AFTER dirtying the card, making the card a false dirty. From `G1RemSet::NoCrossRegion`: "There is no interesting reference in the card any more. The mutator changed all references to such after dirtying the card." | No | **Write churn indicator**: `cardsNoCrossRegion / cardsScanned` > 20% = significant fraction of refinement work is wasted on cards whose cross-region references were overwritten before refinement ran (allocate-and-immediately-overwrite patterns common in producer/consumer or cache-eviction workloads). These cards consumed scan CPU without contributing to remembered-set accuracy. **Action**: this metric cannot be tuned via GC flags — it reflects application write patterns. If it dominates refinement cost, profile hot write-barrier paths in the application; reduce object graph edge churn (e.g., avoid storing cross-region references in frequently-mutated fields). Alternatively, accept the overhead if the write pattern is correct — the refinement thread will process and discard these cards quickly. |
 | `cardsRefersToCset` | **DROPPED** — `stats->cards_refer_to_cset()`: intermediate count of newly-discovered to-CSet cards during this sweep. The actionable metric is `cardsStillRefersToCset` (cards already marked as to-CSet before this sweep, which will re-appear in the next GC pause `Update RS` phase). See open question 2. | — | Dropped |
-| `cardsStillRefersToCset` | `stats->cards_already_refer_to_cset()` — cards found to be already marked as to-CSet (`G1RemSet::AlreadyToCSet` result, `g1ConcurrentRefineSweepTask.cpp:66-69`): these were previously discovered as pointing into the CSet and are being re-encountered. High count = many cards are cycling back through the refinement queue with references that still point into the collection set. | No | **`Update RS` pressure indicator**: `cardsStillRefersToCset / cardsScanned > 5%` across ≥ 2 consecutive sweeps = a significant fraction of refinement work is being re-processed for references into the CSet. These cards will be re-encountered in the GC pause `Update Remembered Set` phase, extending pause time. **Cause**: the CSet selection is including regions that have many incoming cross-region references — regions with high reference fan-in. **Action**: lower `-XX:G1MixedGCLiveThresholdPercent` (default 85%) to exclude densely-referenced regions from the CSet; this reduces `cardsStillRefersToCset` at the cost of leaving those regions in old gen longer. Alternatively, profile which regions have highest fan-in (via `-Xlog:gc+remset=debug`) and whether they can be reduced at the application level (e.g., shared caches or singletons with many pointers). |
+| `cardsStillRefersToCset` | `stats->cards_already_refer_to_cset()` — cards found to be already marked as to-CSet (previously discovered as pointing into the CSet and re-encountered): these are cycling back through the refinement queue with references that still point into the collection set. | No | **`Update RS` pressure indicator**: `cardsStillRefersToCset / cardsScanned > 5%` across ≥ 2 consecutive sweeps = a significant fraction of refinement work is being re-processed for references into the CSet. These cards will be re-encountered in the GC pause `Update Remembered Set` phase, extending pause time. **Cause**: the CSet selection is including regions that have many incoming cross-region references — regions with high reference fan-in. **Action**: lower `-XX:G1MixedGCLiveThresholdPercent` (default 85%) to exclude densely-referenced regions from the CSet; this reduces `cardsStillRefersToCset` at the cost of leaving those regions in old gen longer. Alternatively, profile which regions have highest fan-in (via `-Xlog:gc+remset=debug`) and whether they can be reduced at the application level (e.g., shared caches or singletons with many pointers). |
 | `cardsPending` | `stats->cards_pending()` — backlog remaining after sweep | No | **Backlog trend**: compare across consecutive sweeps. Growing monotonically over 3+ sweeps = refinement throughput is below the write rate — the backlog is accumulating. Cross-reference with `pendingCardsTarget` from `jdk.G1ConcurrentRefinementPolicy` (same metric name, same calculation) — once `cardsPending > pendingCardsTarget`, the policy will try to add more threads (`threadsWanted` increases); if `threadsWanted` is already at the max and `cardsPending` continues growing, the spill will manifest as extended `Update Remembered Set` work in the next GC pause. |
 
 #### What it is used for
@@ -1245,7 +1237,7 @@ The unique justification for this event beyond the Sweep event: `threadsWanted` 
 **Per-GC-pause (log_debug)**:  
 `G1Policy::record_young_collection_end()`  
 [`g1Policy.cpp:803`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1Policy.cpp#L803)  
-**Exact log message** (at [`g1Policy.cpp:1022`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1Policy.cpp#L1022)):
+**Exact log message** (from [`g1Policy.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1Policy.cpp)):
 ```
 log_debug(gc, ergo, refine)("GC refinement: goal: %zu / %1.2fms, actual: %zu / %1.2fms, %s",
     cr->pending_cards_target(),
@@ -1258,9 +1250,9 @@ Log tag: `log_debug(gc,ergo,refine)`. Fields available: `pendingCardsTarget`, `g
 
 **Periodic (log_debug)**:  
 `G1ConcurrentRefine::adjust_threads_wanted()`  
-[`g1ConcurrentRefine.cpp:598`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L598)  
+[`g1ConcurrentRefine.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp)  
 Called from `adjust_num_threads_periodically()`.  
-**Exact log message** (from [`g1ConcurrentRefine.cpp:618`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L618)):
+**Exact log message** (from `g1ConcurrentRefine.cpp`):
 ```
 log_debug(gc, refine)("Concurrent refinement: wanted %u, pending cards: %zu (pending-from-gc %zu), "
     "predicted: %zu, goal %zu, time-until-next-gc: %1.2fms pred-refine-rate %1.2fc/ms log-rate %1.2fc/ms",
@@ -1274,14 +1266,14 @@ Log tag: `log_debug(gc,refine)`.
 ```
 GC pause thread
   → G1YoungCollector::post_evacuate_collection_set()
-    → G1Policy::record_young_collection_end()   [g1Policy.cpp:803](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1Policy.cpp#L803)
+    → G1Policy::record_young_collection_end()
 ```
 
 **Call chain (periodic path)**:
 ```
 G1 concurrent refinement control thread
   → G1ConcurrentRefine::adjust_num_threads_periodically()
-    → adjust_threads_wanted()   [g1ConcurrentRefine.cpp:598](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L598)
+    → adjust_threads_wanted()
 ```
 
 **Cadence**: Once per young GC pause (pause path) plus periodically between pauses (periodic path).
@@ -1293,11 +1285,11 @@ G1 concurrent refinement control thread
 | Field | Source | Nullable? | Tuning use |
 |---|---|---|---|
 | `startTime` | Standard JFR | No | Timestamp of periodic refinement policy evaluation; fires between GC pauses (periodic path only). Correlate with surrounding `jdk.GarbageCollection` events to see the policy state in the inter-GC window |
-| `threadsWanted` | `new_wanted` from `adjust_threads_wanted()` — [`g1ConcurrentRefine.cpp:610`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp#L610). Available on the periodic path only (OQ3 recommends periodic-path-only emission). | No | **Primary output of the control loop**: desired thread count, not the actual running count. If `threadsWanted` consistently equals the max (`-XX:G1ConcRefinementThreads`), the policy is capacity-saturated — increase the flag. If `threadsWanted` is low (≤ 25% of max) but `pendingCards > pendingCardsTarget`, the model is misaligned: the write rate is higher than the policy's prediction. In this case, check `dirtiedCardRate` vs. `predictedRefineRate × threadsWanted` — if write rate genuinely exceeds modeled capacity, workload write patterns may require tuning at the application level or accepting larger card processing in GC pauses. |
+| `threadsWanted` | `new_wanted` from `adjust_threads_wanted()` in [`g1ConcurrentRefine.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefine.cpp). Available on the periodic path only (OQ3 recommends periodic-path-only emission). | No | **Primary output of the control loop**: desired thread count, not the actual running count. If `threadsWanted` consistently equals the max (`-XX:G1ConcRefinementThreads`), the policy is capacity-saturated — increase the flag. If `threadsWanted` is low (≤ 25% of max) but `pendingCards > pendingCardsTarget`, the model is misaligned: the write rate is higher than the policy's prediction. In this case, check `dirtiedCardRate` vs. `predictedRefineRate × threadsWanted` — if write rate genuinely exceeds modeled capacity, workload write patterns may require tuning at the application level or accepting larger card processing in GC pauses. |
 | `pendingCards` | `policy->current_pending_cards()` — current total pending dirty cards from the card queue | No | Current backlog; if growing between policy ticks, refinement is falling behind. **Rate-of-growth heuristic**: if `pendingCards` increases by > 20% between consecutive periodic events (`(new - old) / old > 0.2`), the refinement threads are not draining the backlog — the queue is growing faster than it is being consumed. At this rate, `pendingCards` will exceed `pendingCardsTarget` within a few ticks. Compare to `pendingCardsTarget`: sustained `pendingCards > pendingCardsTarget` means the policy has set a target it cannot achieve with current thread count. |
 | `pendingCardsFromGC` | `pending_cards_from_gc()` — cards dirtied by GC-internal operations (remembered-set rebuilding, evacuation); available on periodic path | No | Distinguishes GC-generated card traffic from mutator write traffic; `pendingCards - pendingCardsFromGC` = mutator-driven backlog. High `pendingCardsFromGC` relative to `pendingCards` (e.g., > 30%) means GC itself is the primary refinement source — a sign of heavy remembered-set work during evacuation. If `pendingCards` is high but `pendingCardsFromGC` accounts for most of it, reducing mutator cross-region writes will not help; the issue is GC-internal RS churn. In that case check `jdk.EvacuationInformation.cSetUsedBefore` — large evacuation sets generate large RS updates. The only lever is reducing CSet size via `G1MixedGCLiveThresholdPercent` or `G1OldCSetRegionThresholdPercent`. |
 | `pendingCardsTarget` | `_pending_cards_target` — policy's goal for pending card count | No | **Key tuning lever**: if `pendingCards` consistently exceeds `pendingCardsTarget`, the target may need to increase or thread count is constrained. The target is derived from `_mmu_tracker->max_gc_time() × G1RSetUpdatingPauseTimePercent / 100 × predictedRefineRate` — so raising `-XX:G1RSetUpdatingPauseTimePercent` (default 10%) increases the time budget allocated to refinement, which raises the target. Raising `-XX:MaxGCPauseMillis` also increases it by giving a larger `max_gc_time()`. Do not raise `G1RSetUpdatingPauseTimePercent` above 25% — at that point, card processing dominates GC pauses and young-gen evacuation gets crowded out. |
-| `predictedPendingCards` | `_threads_needed.predicted_cards_at_next_gc()` — projected backlog at the next GC pause: `num_cards + incoming_rate × predicted_time_until_next_gc`. Source: [`g1ConcurrentRefineThreadsNeeded.cpp:64`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefineThreadsNeeded.cpp#L64) | No | **Future-backlog projection**: the number the `adjust_threads_wanted()` algorithm is trying to keep below `pendingCardsTarget`. If `predictedPendingCards > pendingCardsTarget` with `threadsWanted` already at max, adding threads will not help — write rate fundamentally exceeds refinement throughput capacity. **Actions in that case**: (a) reduce cross-region write rate by profiling hot write-barrier paths in the application; (b) increase `-XX:G1RSetUpdatingPauseTimePercent` to allocate more pause budget to card processing (accepting longer pauses in exchange); (c) reduce allocation rate to space out GC pauses and give refinement more time between them. |
+| `predictedPendingCards` | `_threads_needed.predicted_cards_at_next_gc()` — projected backlog at the next GC pause: `num_cards + incoming_rate × predicted_time_until_next_gc`. Source: [`g1ConcurrentRefineThreadsNeeded.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefineThreadsNeeded.cpp) | No | **Future-backlog projection**: the number the `adjust_threads_wanted()` algorithm is trying to keep below `pendingCardsTarget`. If `predictedPendingCards > pendingCardsTarget` with `threadsWanted` already at max, adding threads will not help — write rate fundamentally exceeds refinement throughput capacity. **Actions in that case**: (a) reduce cross-region write rate by profiling hot write-barrier paths in the application; (b) increase `-XX:G1RSetUpdatingPauseTimePercent` to allocate more pause budget to card processing (accepting longer pauses in exchange); (c) reduce allocation rate to space out GC pauses and give refinement more time between them. |
 | `predictedRefineRate` | `analytics->predict_concurrent_refine_rate_ms()` — predicted cards/ms that the refinement threads can process, derived from historical sweep throughput | No | **Capacity side**: `predictedRefineRate × threadsWanted × timeUntilNextGC` = cards refinement expects to clear before next pause. If this is less than `pendingCards`, the backlog will spill into the GC pause and consume `Update RS` pause budget. A declining `predictedRefineRate` across events = refinement threads are getting slower per card (lock contention, region-structure changes, large RS rebuilds); investigate with `-Xlog:gc+refine=debug`. A sudden drop in `predictedRefineRate` after a G1 region-size change or humongous-allocation surge is expected — those operations invalidate many cards simultaneously, creating a burst of cards that are harder to process. |
 | `dirtiedCardRate` | `analytics->predict_dirtied_cards_rate_ms()` — predicted cards/ms being dirtied by mutator writes, derived from recent write activity | No | **Demand side**: if `dirtiedCardRate > predictedRefineRate × threadsWanted`, the policy will fall behind and the backlog will grow; this is the fundamental refinement-capacity inequality. **Trend monitoring**: growing `dirtiedCardRate` across events = the application's cross-region write rate is increasing (e.g., growing object graph, new promotion-heavy allocation pattern). The policy uses this ratio to determine `threadsWanted` — a sustained high `dirtiedCardRate` will drive `threadsWanted` toward `G1ConcRefinementThreads` max. If `dirtiedCardRate` is consistently high but the application cannot reduce writes, the only tuning levers are more threads or accepting larger GC-pause `Update RS` work. |
 | `goalMs` | `_pending_cards_target` time equivalent: the time window within which refinement is expected to clear its backlog, derived from `_mmu_tracker->max_gc_time() × G1RSetUpdatingPauseTimePercent/100`. On the periodic path (recommended, see OQ3): the time window the policy uses to decide how many threads are needed. | No | **Reference target**: compare `pendingCards / (predictedRefineRate × threadsWanted)` against `goalMs` — if the computed time exceeds `goalMs`, the current thread count cannot drain the backlog before the pause budget expires. `predictedRefineRate × threadsWanted × goalMs` = maximum cards clearable per goal window; if `pendingCards` exceeds this, the backlog will spill into the GC pause. **When `goalMs` is consistently too small**: the root cause is either a tight `MaxGCPauseMillis` (shrinks `max_gc_time()`) or a low `G1RSetUpdatingPauseTimePercent` (default 10%). Actions: (1) raise `G1RSetUpdatingPauseTimePercent` to allocate a larger fraction of the pause budget to card processing — each 1% increase raises `goalMs` proportionally; (2) raise `MaxGCPauseMillis` to increase the absolute pause budget, which also raises `goalMs`; (3) do NOT set `G1RSetUpdatingPauseTimePercent > 25%` — beyond that, card processing dominates the pause and evacuation is crowded out. If `goalMs` is large but `threadsWanted` is at max and the backlog still exceeds capacity, the write rate fundamentally exceeds refinement throughput; only reducing cross-region write rate at the application level will resolve it. |
@@ -1336,7 +1328,7 @@ Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](ht
 #### Open questions / upstream concerns
 
 1. **Debug-level source** — same justification applies as for `jdk.G1ConcurrentRefinementSweep`: the data is in the product build, JFR access is independent of `-Xlog` level, and `jdk.G1AdaptiveIHOP`/`jdk.G1BasicIHOP` establish precedent for JFR events from `log_debug(gc,ergo)` sites. The key additional argument for Policy: `threadsWanted` is the primary output of a control loop that directly affects GC pause time — making it invisible at `log_info` level while explicitly documenting it as a tuning control (`-XX:G1ConcRefinementThreads`) is an inconsistency in the existing observability design.
-2. **Resolved**: keep `predictedPendingCards`. Source: `_predicted_cards_at_next_gc = num_cards + incoming_rate × predicted_time_until_next_gc` at [`g1ConcurrentRefineThreadsNeeded.cpp:64`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefineThreadsNeeded.cpp#L64). This is the **projected backlog at the next GC** — the number the `adjust_threads_wanted()` algorithm is trying to get below `pendingCardsTarget`. It is actionable: if `predictedPendingCards` consistently exceeds `pendingCardsTarget` even when `threadsWanted` is at max, the refinement system cannot keep up regardless of thread count, and the only fix is workload reduction or write-barrier profile change.
+2. **Resolved**: keep `predictedPendingCards`. Source: `_predicted_cards_at_next_gc = num_cards + incoming_rate × predicted_time_until_next_gc` at [`g1ConcurrentRefineThreadsNeeded.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1ConcurrentRefineThreadsNeeded.cpp). This is the **projected backlog at the next GC** — the number the `adjust_threads_wanted()` algorithm is trying to get below `pendingCardsTarget`. It is actionable: if `predictedPendingCards` consistently exceeds `pendingCardsTarget` even when `threadsWanted` is at max, the refinement system cannot keep up regardless of thread count, and the only fix is workload reduction or write-barrier profile change.
 3. **Resolved: emit from the periodic `adjust_threads_wanted()` path only.** The GC-pause path (`record_young_collection_end()`) provides `exceededGoal`, `pendingCards`, `goalMs`, and `pendingCardsTimeMs` but lacks `threadsWanted`, `pendingCardsFromGC`, `predictedRefineRate`, and `dirtiedCardRate` — the four fields that make the event actionable. Emitting from the periodic path (every inter-GC interval) captures all fields in a single, consistent shape. The GC-pause-aligned data (`pendingCardsTimeMs`) can be derived by correlating with `jdk.GarbageCollection` if needed. Emitting from both paths with different nullable field sets creates a confusing event with two modes — avoid this.
 
 ---
@@ -1361,28 +1353,26 @@ The practical consequence of this gap: when old-gen occupancy grows despite mixe
 
 #### Emission points
 
-**Marking candidates**:  
-`G1CollectionSet::select_candidates_from_marking()`  
-[`g1CollectionSet.cpp:414`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L414)
+**Source file**: [`g1CollectionSet.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp)
 
-**Start log** ([`g1CollectionSet.cpp:435`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L435)):
+Two selection passes run per mixed GC pause:
+- **Marking candidates**: `G1CollectionSet::select_candidates_from_marking()` — selects old-gen regions from the previous concurrent marking cycle that are above `G1MixedGCLiveThresholdPercent`.
+- **Retained candidates**: `G1CollectionSet::select_candidates_from_retained()` — selects regions retained from a prior mixed-GC cycle that weren't added to the previous CSet.
+
+**Start log** (Marking):
 ```
 log_debug(gc, ergo, cset)("Start adding marking candidates to collection set. "
     "Min %u regions, max %u regions, available %u regions (%u groups), ...");
 ```
 
-**Finish log** ([`g1CollectionSet.cpp:521`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L521)):
+**Finish log** (Marking):
 ```
 log_debug(gc, ergo, cset)("Finish adding marking candidates to collection set. "
     "Initial: %u regions (%u groups), optional: %u regions (%u groups), "
     "predicted initial time: %1.2fms, predicted optional time: %1.2fms, time remaining: %1.2fms");
 ```
 
-**Retained candidates**:  
-`G1CollectionSet::select_candidates_from_retained()`  
-[`g1CollectionSet.cpp:531`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L531)
-
-**Start log** ([`g1CollectionSet.cpp:552`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L552)):
+**Start log** (Retained):
 ```
 log_debug(gc, ergo, cset)("Start adding retained candidates to collection set. "
     "Min %u regions, available %u regions (%u groups), "
@@ -1391,10 +1381,9 @@ log_debug(gc, ergo, cset)("Start adding retained candidates to collection set. "
 
 Log tag: `log_debug(gc,ergo,cset)` at all sites.
 
-**Stop reason source** ([`g1CollectionSet.cpp:399-518`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L399)):
+**Stop reason source** (from `print_finish_message()` in `g1CollectionSet.cpp`):
 
 ```cpp
-// g1CollectionSet.cpp:399
 static void print_finish_message(const char* reason, bool from_marking) {
   log_debug(gc, ergo, cset)("Finish adding %s candidates to collection set (%s).",
                             from_marking ? "marking" : "retained", reason);
@@ -1423,10 +1412,10 @@ log_debug(gc, ergo, cset)("Marking candidates exhausted.");         // stopReaso
 **Call chain**:
 ```
 GC pause thread (during CSet finalization, before evacuation)
-  → G1CollectionSet::finalize_initial_collection_set()   [g1CollectionSet.cpp:715](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L715)
-    → G1CollectionSet::finalize_old_part()   [g1CollectionSet.cpp:377](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L377)
-      → select_candidates_from_marking()   [g1CollectionSet.cpp:414](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L414)
-      → select_candidates_from_retained()   [g1CollectionSet.cpp:531](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectionSet.cpp#L531)
+  → G1CollectionSet::finalize_initial_collection_set()
+    → G1CollectionSet::finalize_old_part()
+      → select_candidates_from_marking()
+      → select_candidates_from_retained()
 ```
 
 **Cadence**: Twice per mixed GC pause (once for Marking, once for Retained). Zero times during non-mixed pauses.
@@ -1441,7 +1430,7 @@ GC pause thread (during CSet finalization, before evacuation)
 | `candidateType` | `"Marking"` or `"Retained"` — two passes per mixed GC; marking candidates come from completed marking, retained from previous mixed GCs where optional regions were not evacuated | No | **Marking**: primary old-gen reclaim path, driven by completed concurrent marking; the pool of new candidates identified since the last mixed-GC cycle. **Retained**: secondary path for optional regions deferred from prior pauses; if these accumulate across cycles (`availableRegions` for the Retained event grows over multiple GCs), optional evacuation is not keeping pace with deferral. Use as a split key: analyze `selectedRegions / availableRegions` and `stopReason` separately per `candidateType` — a time-constrained Marking pass and an exhausted Retained pass mean different things and need different tuning. |
 | `minRegions` | `min_old_cset_length` / `min_retained_old_cset_length` — minimum regions added regardless of time budget; if the time budget is exhausted before `minRegions` is reached, G1 continues adding until this floor is met (these over-budget additions are counted in `overBudgetRegions`) | No | **Budget-floor gauge**: `minRegions > 0` and `overBudgetRegions > 0` = G1 intentionally violated the pause budget to ensure at least `minRegions` regions are reclaimed per pause — the floor is binding. If `overBudgetRegions` is consistently non-zero, the minimum guarantee is conflicting with the pause goal; raising `G1MixedGCCountTarget` spreads work across more pauses (smaller `minRegions` per pause) to reduce the over-budget additions while still making progress. |
 | `maxRegions` | `max_old_cset_length` — maximum regions the policy will add; derived from `G1OldCSetRegionThresholdPercent` (default 10%) × available old-gen regions | No | **Selection ceiling**: if `selectedRegions == maxRegions` AND `timeRemainingMs > 0` → the region cap, not the time budget, was the binding constraint. This is signaled by `stopReason = "Maximum number of regions reached"`. To allow more old-gen work per pause, raise `-XX:G1OldCSetRegionThresholdPercent`; each increase gives G1 more regions to select before hitting the cap. Conversely, if over-budget additions are frequent (`overBudgetRegions > 0`), a lower cap would help constrain per-pause cost — decrease the threshold. The cap is a rate-of-reclamation vs. pause-time trade-off; values above 10% accelerate old-gen reclamation but lengthen pauses. |
-| `availableRegions` | Candidate regions count at selection start — for Marking: old-gen regions above `G1MixedGCLiveThresholdPercent` (default 85%) liveness that completed marking; for Retained: optional regions deferred from the prior mixed pause | No | **Reclamation opportunity gauge**: high `availableRegions` means old gen has many reclaimable regions; if `selectedRegions / availableRegions` is consistently low (< 0.3), the pause budget or `maxRegions` cap is the bottleneck — not lack of candidates. If `availableRegions` is low, the live set is dense: few regions have enough garbage to exceed `G1MixedGCLiveThresholdPercent`; either lower this threshold (default 85% → e.g. 75%) to include more regions as candidates, or accept that old gen has very few reclaimable regions and marking is working correctly but old-gen reclamation rate is limited by live-object density. |
+| `availableRegions` | Candidate regions count at selection start — for Marking: `candidates()->from_marking_groups()->num_regions()` (aggregate region count across all marking candidate groups above `G1MixedGCLiveThresholdPercent`); for Retained: `candidates()->retained_groups().num_regions()` (optional regions deferred from prior mixed pauses) | No | **Reclamation opportunity gauge**: high `availableRegions` means old gen has many reclaimable regions; if `selectedRegions / availableRegions` is consistently low (< 0.3), the pause budget or `maxRegions` cap is the bottleneck — not lack of candidates. If `availableRegions` is low, the live set is dense: few regions have enough garbage to exceed `G1MixedGCLiveThresholdPercent`; either lower this threshold (default 85% → e.g. 75%) to include more regions as candidates, or accept that old gen has very few reclaimable regions and marking is working correctly but old-gen reclamation rate is limited by live-object density. |
 | `availableGroups` | **DROPPED** — internal card-set optimization structure; `availableRegions` is the actionable metric (see open question 4). | — | Dropped |
 | `selectedRegions` | Initial (`num_inital_regions`) + normal regions actually selected | No | **Constraint disambiguation using sibling fields**: (1) `selectedRegions < availableRegions` AND `timeRemainingMs == 0` AND `stopReason = "Predicted time too high"` → pause time budget was the binding constraint; (2) `selectedRegions < availableRegions` AND `timeRemainingMs > 0` AND `stopReason = "Maximum number of regions reached"` → hard region cap (`G1OldCSetRegionThresholdPercent`) was the binding constraint despite remaining time budget; (3) `selectedRegions ≈ availableRegions` AND `stopReason ends with "exhausted"` → healthy: all candidates consumed, reclamation is not externally constrained. The ratio `selectedRegions / availableRegions` alone is ambiguous — it cannot distinguish between these cases. Always read it alongside `stopReason` and `timeRemainingMs`. |
 | `optionalRegions` | Optional regions selected (deferred to optional evacuation step) | No | Non-zero = time budget was not exhausted by initial selection; additional regions were queued for optional evacuation (attempted if time permits after initial CSet is evacuated). **If `optionalRegions` is always 0**: either the initial selection consumed the entire pause budget (`timeRemainingMs == 0`) or the candidate pool was exhausted — no regions were left for optional treatment. `optionalRegions` always 0 with `timeRemainingMs == 0` = time-constrained; `optionalRegions` always 0 with `timeRemainingMs > 0` = candidate pool exhausted before optional threshold. **If `optionalRegions` is consistently non-zero and `stopReason` is time-based**: optional regions exist but may never be evacuated if pauses are short — they accumulate in the Retained list, which is why `candidateType="Retained"` events appear. |
@@ -1517,6 +1506,8 @@ Oracle explicitly tells operators to enable `gc+ergo+cset=debug` to diagnose mix
 
 3. **Emission gate**: must be gated on `resizeBytes != 0`. The `expand` reference parameter in `young_collection_resize_amount()` is only assigned inside the expand/shrink branches — when neither fires, it retains a stale value. The caller at `g1CollectedHeap.cpp:988` already checks `if (resize_bytes != 0)` before acting. The JFR event must apply the same gate to avoid emitting per-pause noise with stale field values.
 
+**Source stability note**: `g1HeapSizingPolicy.cpp` receives moderate churn — 10+ commits since 2025 including JDK-8359348 (CPU usage measurement improvements) and JDK-8355756 (full collection resize). The sizing algorithm was substantially revised in the recent JDK 26 development cycle. Verify field accessor names (`short_term_gc_time_ratio()`, `long_term_gc_time_ratio()`) and function signatures at `g1HeapSizingPolicy.cpp` before finalizing any implementation.
+
 #### The question it answers
 
 "Why did G1 decide to expand or shrink its heap after this pause, and was the resize gated by a capacity limit?"
@@ -1527,54 +1518,16 @@ The practical consequence: when GC pauses are unexpectedly long despite a large 
 
 #### Emission point
 
+**Source file**: [`g1HeapSizingPolicy.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp)
+
 **Function**: `G1HeapSizingPolicy::young_collection_resize_amount()`  
-[`g1HeapSizingPolicy.cpp:216`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L216)  
-Three `log_resize()` calls at lines 302, 319, 337.  
-Also: `young_collection_shrink_amount()` at [`g1HeapSizingPolicy.cpp:172`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L172).
+Single `log_resize()` call at the end of the function (unconditional — fires on every call).
 
-**Sigmoid scaling function** ([`g1HeapSizingPolicy.cpp:97-135`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L97)):
+**Sigmoid scaling function**: Applied to map the CPU usage deviation into a resize scale factor. The sigmoid is a logistic function with inflection at 100% deviation from target and steepness=6.0, returning values in [0,1]. Small deviations from the target produce near-minimum scaling (conservative); deviations at or above 100% produce near-maximum scaling (aggressive). The scale factor is interpolated between `G1ShrinkByPercentOfAvailable` (min) and 2× that (max). This `scaleFactorPct` reflects a rolling-average deviation magnitude (from `_recent_cpu_usage_deltas`), not the instantaneous counter value.
 
-```cpp
-// g1HeapSizingPolicy.cpp:97
-// Logistic function, returns values in the range [0,1]
-static double sigmoid_function(double value) {
-  double inflection_point = 1.0; // 100% deviation from target
-  double steepness = 6.0;
-  return 1.0 / (1.0 + exp(-steepness * (value - inflection_point)));
-}
+**Deviation counter**: `_gc_cpu_usage_deviation_counter` increments when `short_term_gc_cpu_usage > upper_threshold`, decrements when below `lower_threshold`, and is reset to 0 after each successful resize. A separate decay path (`decay_cpu_usage_tracking_data()`) handles the long-term check interval when no resize fires. Threshold for expansion: counter ≥ `G1CPUUsageExpandThreshold` (default 4); threshold for shrink: counter ≤ `-G1CPUUsageShrinkThreshold` (default -8).
 
-double G1HeapSizingPolicy::scale_cpu_usage_delta(
-    double cpu_usage_delta, double min_scale_factor, double max_scale_factor) const {
-  double sigmoid = sigmoid_function(cpu_usage_delta);
-  double scale_factor = min_scale_factor + (max_scale_factor - min_scale_factor) * sigmoid;
-  return scale_factor;
-}
-
-// For shrink: min_scale_factor from G1ShrinkByPercentOfAvailable, max from 2x that.
-// scaleFactorPct = scale_cpu_usage_delta(cpu_usage_delta, min, max) * 100
-```
-
-The sigmoid inflection at `cpu_usage_delta=1.0` (100% deviation from target) means: small deviations produce near-minimum scaling (conservative), deviations at 100%+ produce near-maximum scaling (aggressive). At steepness=6.0, the transition is sharp near 1.0 but not a step function.
-
-**Deviation counter update logic** ([`g1HeapSizingPolicy.cpp:226-244`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L226)):
-
-```cpp
-// Thresholds: target ± G1CPUUsageDeviationPercent (default 25%)
-const double upper_threshold = gc_cpu_usage_target * (1 + G1CPUUsageDeviationPercent/100.0);
-const double lower_threshold = gc_cpu_usage_target * (1 - G1CPUUsageDeviationPercent/100.0);
-
-// Counter update per GC pause:
-if (short_term_gc_cpu_usage > upper_threshold) {
-  _gc_cpu_usage_deviation_counter++;   // → expand when counter >= G1CPUUsageExpandThreshold (4)
-} else if (short_term_gc_cpu_usage < lower_threshold) {
-  _gc_cpu_usage_deviation_counter--;   // → shrink when counter <= -G1CPUUsageShrinkThreshold (-8)
-}
-// Reset to 0 after each successful resize. Halved (not zeroed) on soft reset.
-```
-
-The `deviationCounter` field captures this accumulated state: positive = N consecutive above-upper-threshold pauses; negative = N consecutive below-lower-threshold pauses; 0 = within tolerance band or just resized.
-
-**Exact log message** via `log_resize()` ([`g1HeapSizingPolicy.cpp:82`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L82)):
+**Exact log message** via `log_resize()`:
 ```
 log_debug(gc, ergo, heap)("Heap resize: "
     "short term GC CPU usage %1.2f%% long term GC CPU usage %1.2f%% "
@@ -1590,13 +1543,13 @@ Log tag: `log_debug(gc,ergo,heap)` — `log_resize()` is debug level.
 **Call chain**:
 ```
 GC pause thread
-  → G1CollectedHeap::resize_heap_after_young_collection()   [g1CollectedHeap.cpp:986](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L986)
-    → young_collection_resize_amount()   [g1HeapSizingPolicy.cpp:216](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp#L216)
+  → G1CollectedHeap::resize_heap_after_young_collection()
+    → G1HeapSizingPolicy::young_collection_resize_amount()
 ```
 
-Fires at end of every young GC pause.
+Fires at end of every young GC pause (unconditionally — `log_resize()` is called at the end of `young_collection_resize_amount()` regardless of whether a resize occurred). The `at_limit=true` early-return paths also call `log_resize()` before returning with `resize_bytes=0`. Gate JFR emission on `resizeBytes != 0` to avoid per-pause noise.
 
-**Cadence**: Once per young GC pause. NOTE: fires even when `resizeBytes == 0` (no resize occurred). Consider gating JFR emission on `resizeBytes != 0`.
+**Cadence**: Once per young GC pause.
 
 **Thread**: GC pause thread.
 
@@ -1611,7 +1564,7 @@ Fires at end of every young GC pause.
 | `lowerThresholdPct` | `gc_cpu_usage_target * (1 - G1CPUUsageDeviationPercent/100)` where `gc_cpu_usage_target = 1/(1+GCTimeRatio)` (scaled by heap fill ratio) | No | Below this → shrink candidate. Example: `GCTimeRatio=24` → target=4%; `G1CPUUsageDeviationPercent=25` → lower=3%. If `shortTermGcCpuUsagePct` consistently stays below `lowerThresholdPct`, the heap is oversized for this workload and memory is being held unnecessarily. **Action**: either accept the shrink (G1 will shrink automatically) or raise `GCTimeRatio` to reduce the target fraction and widen the lower threshold — useful if the heap must stay large to handle burst allocation. If `shortTermGcCpuUsagePct` is below `lowerThresholdPct` but `atLimit=true` on shrink, `-Xms` is preventing the release; reduce `-Xms` if OS-level memory pressure is a concern. |
 | `upperThresholdPct` | `gc_cpu_usage_target * (1 + G1CPUUsageDeviationPercent/100)` | No | Above this → expand candidate. Same example: upper=5%. If `shortTermGcCpuUsagePct` persistently exceeds `upperThresholdPct` across 4+ consecutive events (`deviationCounter >= G1CPUUsageExpandThreshold`) and `atLimit=false`, the heap will expand automatically. **Action when `atLimit=true`**: `-Xmx` is preventing the needed expansion — increase it. **Action when oscillating around `upperThresholdPct`**: the workload has variable GC load; widen the band with `G1CPUUsageDeviationPercent` (default 25% — increase to e.g. 35%) to prevent the deviationCounter from reaching +4 on transient spikes. **Action when consistently high but `resizeBytes=0` for many events**: `deviationCounter` is not accumulating to +4, likely because occasional low-GC-CPU pauses reset it — diagnose by tracking `deviationCounter` trend directly. |
 | `gcCpuUsageTargetPct` | `1.0 / (1.0 + GCTimeRatio)` × heap-scale factor; steady-state desired GC CPU fraction | No | The target the policy is aiming for. With `GCTimeRatio=24` (G1 default) this is 4% before heap scaling. `scale_with_heap()` reduces the target when committed heap ≤ half of max — meaning a small heap is allowed to run GC harder before expanding. **Use as a reference**: compare `shortTermGcCpuUsagePct` against `gcCpuUsageTargetPct` to see how far actual GC load is from the policy's desired state. If actual is persistently 2× the target, either allocation rate is high for the heap size or `GCTimeRatio` is too high (set too permissive — lower it to set a tighter GCU% ceiling, causing earlier expansion). If actual is consistently below half the target, the heap is oversized for the workload — lower `GCTimeRatio` to shrink the target and allow earlier shrink, or accept the oversized heap. |
-| `expand` | `true`=expand, `false`=shrink; only valid when `resizeBytes != 0` — `expand` is a reference parameter in `young_collection_resize_amount()` that is only assigned inside the expand (line 298) or shrink (line 316) branches; when neither fires it retains a stale value | Yes (null if `resizeBytes=0`) | **Direction of resize**: `expand=true` = GC CPU usage was persistently above `upperThresholdPct`; heap is growing to lower GC overhead per pause. `expand=false` = GC CPU has been consistently below `lowerThresholdPct`; heap is shrinking to release pages. Always read alongside `atLimit` — if `expand=true + atLimit=true`, the expansion was requested but blocked by `-Xmx`; if `expand=false + atLimit=true`, shrink was requested but blocked by `-Xms`. An alternating pattern (`true` then `false` on successive events within a few pauses) = heap oscillation — widen the deviation band with `G1CPUUsageDeviationPercent`. |
+| `expand` | `true`=expand, `false`=shrink; only valid when `resizeBytes != 0` — set to `true` only inside the expand branch of `young_collection_resize_amount()`, remains `false` when shrink fires or no resize occurs. | Yes (null if `resizeBytes=0`) | **Direction of resize**: `expand=true` = GC CPU usage was persistently above `upperThresholdPct`; heap is growing to lower GC overhead per pause. `expand=false` = GC CPU has been consistently below `lowerThresholdPct`; heap is shrinking to release pages. Always read alongside `atLimit` — if `expand=true + atLimit=true`, the expansion was requested but blocked by `-Xmx`; if `expand=false + atLimit=true`, shrink was requested but blocked by `-Xms`. An alternating pattern (`true` then `false` on successive events within a few pauses) = heap oscillation — widen the deviation band with `G1CPUUsageDeviationPercent`. |
 | `resizeBytes` | `young_collection_resize_amount()` return value; 0 = no resize triggered this pause | No | **Magnitude of resize**: 0 on most pauses (heap inside tolerance band). Non-zero = a resize fired; divide by `G1HeapRegionSize` to get region count. Large `resizeBytes` on expansion (e.g., > 10% of current heap) = the deviation counter hit the threshold after being compressed for several pauses — the heap will jump rather than grow gradually. Large `resizeBytes` on shrink with `scaleFactorPct > 80%` = aggressive sigmoid scaling is releasing many regions at once, risking a subsequent promotion overflow. Tracking the running sum of `resizeBytes` (sign-adjusted: `+` for expand, `−` for shrink) gives the net committed-heap change over a recording window. |
 | `atLimit` | Boolean: heap already at min/max capacity, so resize was requested but not possible | No | Two distinct cases: **(1) `expand=true` + `atLimit=true`**: heap needs to grow (GC CPU above `upperThresholdPct` for 4+ consecutive pauses) but `-Xmx` is the ceiling — increase max heap. **(2) `expand=false` + `atLimit=true`**: heap needs to shrink (GC CPU below `lowerThresholdPct` for 8+ consecutive pauses) but committed size is already at the minimum (`-Xms` or system allocation granularity). The heap footprint cannot be reduced further — common causes: `-Xms` equals `-Xmx` (no headroom for shrink), OS huge-page backing that prevents partial uncommit, or `InitialHeapSize` was set equal to `MaxHeapSize`. In this case, the shrink signal is structural and will continue to fire — no action is needed unless OS-level memory pressure exists, in which case reducing `-Xms` allows the JVM to release pages when GC CPU is low. |
 | `scaleFactorPct` | From `young_collection_shrink_amount()` sigmoid scaling — accounts for how far GC CPU usage deviated | Yes (null on expansion path) | Sigmoid-based shrink aggressiveness: applied to `free_regions × regionSizeBytes` to produce `shrinkBytes`. Near `min_scale_factor` (conservative) when deviation is small; near `max_scale_factor` (aggressive) when `|deviationCounter|` is at the shrink threshold (−8). At 100%+ scale, GC shrinks a large fraction of available free regions in one cycle. **Risk pattern**: `scaleFactorPct > 80%` followed by a `promotedBytesEstimate` spike in the next 2–3 cycles = aggressive shrink followed by promotion burst may overflow the now-smaller old gen. **Action if this pattern appears**: reduce `|deviationCounter|` by raising `G1CPUUsageShrinkThreshold` (default −8) to require more consecutive below-threshold samples before shrinking; this dampens oscillation. Alternatively, verify that GC CPU is genuinely low (check `longTermGcCpuUsagePct`) — if it's still near the target, `shortTermGcCpuUsagePct` may be transiently low due to a quiet period and the shrink is premature. |
@@ -1635,7 +1588,7 @@ G1 adjusts the committed heap between pauses based on GC CPU usage vs. a target 
 - `jdk.G1AdaptiveIHOP`: covers old-gen occupancy threshold for initiating concurrent marking; carries `threshold`, `thresholdPercent`, `ihopPercent`, `recentMutatorAllocationSize` — none of these are CPU-usage deviation fields. Does not record committed heap resize.
 - `jdk.G1HeapSummary`: carries `heapSpace` (reserved/committed/used) and `edenUsedSize`/`edenTotalSize`/`survivorUsedSize`/`metaspaceUsedSize` — size outcomes. By diffing consecutive events you can compute the resize delta, but you cannot determine whether the resize was driven by GC CPU usage exceeding `upperThresholdPct`, by the long-term check, or why it was suppressed (`atLimit=true`). The `deviationCounter`, `scaleFactorPct`, and `gcCpuUsageTargetPct` fields are absent entirely.
 - `jdk.GCHeapSummary`: records `heapSpace` (reserved/committed/used) — the same size-outcome limitation as `jdk.G1HeapSummary`. Does not carry any of: `deviationCounter`, `shortTermGcCpuUsagePct`, `upperThresholdPct`, `lowerThresholdPct`, `gcCpuUsageTargetPct`, `scaleFactorPct`, `expand`, `atLimit`, or `resizeBytes`.
-- `jdk.GCConfiguration`: records `gcTimeRatio` at JVM startup (`GCTimeRatio` flag value); does not expose the per-pause deviation counter, whether the heap reached a resize threshold this pause, or the effective scaled `gcCpuUsageTargetPct` (which differs from `1/(1+GCTimeRatio)` when heap is below half of max capacity — see `scale_with_heap()` in `g1HeapSizingPolicy.cpp:131`).
+- `jdk.GCConfiguration`: records `gcTimeRatio` at JVM startup (`GCTimeRatio` flag value); does not expose the per-pause deviation counter, whether the heap reached a resize threshold this pause, or the effective scaled `gcCpuUsageTargetPct` (which differs from `1/(1+GCTimeRatio)` when heap is below half of max capacity — see `scale_with_heap()` in [`g1HeapSizingPolicy.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp)).
 - No existing JFR event exposes `G1HeapSizingPolicy`'s `_gc_cpu_usage_deviation_counter`, `expand`, `atLimit`, `scaleFactorPct`, or `resizeBytes`. By diffing consecutive `jdk.G1HeapSummary` events you can compute the resize delta after the fact, but you cannot determine what CPU deviation triggered the resize, how close the counter was to the threshold, whether the resize was blocked by `-Xms`/`-Xmx` limits, or what scale factor was applied. The policy's internal reasoning is entirely absent from the JFR event stream today.
 
 #### External references
@@ -1661,7 +1614,7 @@ This interacts with `jdk.G1HeapResize`'s `atLimit` field: when both `-Xmx` and p
 
 1. **Debug-level source**: same argument as for refinement events — data is in product build, JFR access model is independent of `-Xlog`. The Oracle G1 Tuning Guide references `GCTimeRatio` as a key tuning control; the policy evaluation data that drives heap resizing should be observable without debug logging. **Recommended approach**: promote `log_resize()` calls from `log_debug(gc,ergo,heap)` to `log_info(gc,ergo,heap)` in the same PR — this is directly parallel to how `jdk.G1AdaptiveIHOP` events were justified and accepted.
 2. **Resolved**: accept shrink-path nullable fields in the initial proposal. The three shrink-only fields (`scaleFactorPct`, `freeRegions`, `regionsNeededForAlloc`) are null on the expansion path because `young_collection_shrink_amount()` is only called on the shrink branch. Separating into two events (`jdk.G1HeapExpand` + `jdk.G1HeapShrink`) would be cleaner but doubles the boilerplate for a relatively rare event. The nullable pattern is acceptable here because: (a) `resizeBytes > 0` is required to emit at all, so null fields always co-occur with meaningful `expand=false`; (b) all three fields are from the same function call and have a clear, consistent null condition. Note in the schema: these three fields are populated only when `expand=false`.
-3. **Resolved**: the event should be gated on `resizeBytes != 0`. Source analysis: `young_collection_resize_amount()` uses a `bool& expand` reference parameter that is only assigned inside the expand (line 298) or shrink (line 316) branches. When neither branch fires, `expand` retains whatever stale value it had from a previous call — and the caller at [`g1CollectedHeap.cpp:988`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L988) already checks `if (resize_bytes != 0)` before using `expand`. Emitting the event only on `resizeBytes != 0` keeps `expand` well-defined and avoids per-pause noise.
+3. **Resolved**: the event should be gated on `resizeBytes != 0`. Source analysis: `young_collection_resize_amount()` uses a `bool& expand` reference parameter initialized to `false` at the top of the function. When neither the expand nor shrink branch fires (and no long-term trigger), `expand` retains `false` — which is misleading if emitted. The caller at [`g1CollectedHeap.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1CollectedHeap.cpp) already checks `resize_bytes != 0` before acting on `expand`. Emitting the JFR event only on `resizeBytes != 0` keeps `expand` well-defined and avoids per-pause noise on the ~99% of pauses where no resize fires.
 4. **Resolved**: keep `gcCpuUsageTargetPct`. The `scale_with_heap()` function modifies the target when committed heap ≤ half of max capacity (`target *= capacity / (max_capacity/2)`, floored at 1%) — the effective target is *not* simply `1/(1+GCTimeRatio)` in that case. Without emitting the scaled value, operators cannot reason about why expansion triggered at a non-standard threshold. `jdk.GCConfiguration.gcTimeRatio` gives the configured ratio but not the effective scaled target.
 
 ---
