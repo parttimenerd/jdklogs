@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 61)
+**Last updated**: 2026-08-19 (pass 62)
 
 ---
 
@@ -180,7 +180,7 @@ Containerized JVMs running glibc suffer from a well-known RSS bloat problem: mal
 - `deltaBytes` near 0 on most trims with `detailsAvailable=true` → two distinct cases: (a) the JVM is continuously using all its native memory (arenas fully committed, nothing to return) — this is normal under high allocation pressure; the trims are running but finding no bloat to reclaim; (b) glibc arenas are fragmented internally but in a way that `malloc_trim()` cannot compact (e.g., live allocations pinning arena segments). Distinguish case (a) from (b) by comparing JVM heap usage growth — if heap is stable but native RSS stays high after trim, fragmentation is the cause; if heap is growing, arenas are genuinely in use.
 - `deltaBytes` near 0 with `detailsAvailable=false` → platform does not expose `/proc/self/status` (non-Linux container or restricted procfs) — trim is executing but outcome is unobservable.
 - `deltaBytes` large (> 50MB) on first few trims, then near 0 → normal: initial trims clear accumulated arena bloat from the warm-up phase; subsequent trims find little to release. This is the healthy pattern.
-- `deltaBytes` consistently large (> 20MB) on every trim → arenas are continuously accumulating bloat between trims; trim is working but interval may be too long. Decrease `-XX:TrimNativeHeapInterval` to trim more frequently.
+- `deltaBytes` consistently large (> 20MB) on every trim → arenas are continuously accumulating bloat between trims; trim is reclaiming significant memory on each run but not frequently enough. Decrease `-XX:TrimNativeHeapInterval` to trim more frequently — the bloat accumulating between trims is proportional to allocation churn rate times the interval; halving the interval roughly halves the per-trim delta at steady state.
 - `deltaBytes` consistently near 0 after every trim (not the first-few-warm-up pattern) → arenas have nothing to return, meaning either the workload holds native memory continuously or trim frequency exceeds the rate at which arenas accumulate bloat. Safe to increase `-XX:TrimNativeHeapInterval` (reducing trim overhead) — but first verify RSS is not growing: if `jdk.ResidentSetSize.size` is rising despite near-zero `deltaBytes`, glibc is acquiring new pages faster than trim can reclaim, which is a fragmentation or footprint issue, not an interval issue.
 
 **Cross-event correlation**: join `jdk.NativeHeapTrim.startTime` with `jdk.GarbageCollection.startTime` by time proximity (within a 500ms window). If large `deltaBytes` trim events consistently coincide with GC pause windows, it means glibc arenas are releasing pages primarily during GC-induced allocation lulls — not during the trim itself. This pattern argues for a shorter `TrimNativeHeapInterval` so that arenas are reclaimed more aggressively between pauses rather than relying on GC-adjacent idleness. If large `deltaBytes` trims occur with no nearby GC events, the application's own allocation rate is releasing arena capacity naturally — trims are effective independent of GC. Join with `jdk.ResidentSetSize` (by `startTime` proximity, since that event fires periodically) to track whether `beforeBytes` of consecutive `jdk.NativeHeapTrim` events tracks the `jdk.ResidentSetSize.size` trend — if RSS is rising between trims faster than `deltaBytes` can reclaim, the native heap is growing net-positive despite trimming.
@@ -188,7 +188,7 @@ Containerized JVMs running glibc suffer from a well-known RSS bloat problem: mal
 #### Why existing events don't cover this
 
 - `jdk.ResidentSetSize`: carries `size` (current RSS) and `peak` (peak RSS since JVM start); fires `period="everyChunk"` as a snapshot. It answers "what is RSS right now" — it cannot attribute a change to a deliberate trim operation, because other allocation/deallocation activity happens concurrently. There is no `deltaBytes` field, no `trimDuration` field, and no way to isolate a single trim operation's contribution from background noise. The two events are orthogonal: `jdk.NativeHeapTrim` says "this specific trim recovered X bytes in Y ms"; `jdk.ResidentSetSize` says "RSS is currently Z bytes".
-- No other JFR event references `NativeHeapTrimmer`, `TrimNativeHeapInterval`, or `os::trim_native_heap`.
+- No other JFR event references `NativeHeapTrimmer`, `TrimNativeHeapInterval`, or `os::trim_native_heap`. The trim operation is entirely invisible in JFR today: there is no `beforeBytes`/`afterBytes` pair, no `trimDurationMs`, no `detailsAvailable` flag, and no `trimCount` monotonic counter. The only native-heap signal in JFR is the `jdk.ResidentSetSize` periodic snapshot, which captures no per-trim causality.
 
 #### External references
 
@@ -309,7 +309,7 @@ The JFR event fires at the `log_info` site. To access `long_term_gc_time_ratio` 
 - No `jdk.OutOfMemoryError` event exists in the JFR metadata — verified against `src/hotspot/share/jfr/metadata/metadata.xml`. The JVM does fire `jdk.JavaErrorThrow` but that is at the Java exception propagation level, after the OOM object is constructed, and carries no GC state fields.
 - `jdk.GCHeapSummary`, `jdk.G1HeapSummary`, `jdk.PSHeapSummary`: record heap sizes at GC events (`heapSpace`, `edenSpace`, etc.) — outcome fields at GC boundaries, not at the allocation failure → OOM decision moment. Do not carry `gc_overhead_counter`, `long_term_gc_time_ratio`, or the `GCTimeLimit`/`GCHeapFreeLimit` threshold state.
 - `jdk.GCCPUTime` (G1/Parallel/Serial): records per-pause CPU time (`userTime`, `systemTime`, `realTime`) — does not expose the `_gc_overhead_counter` incremented by `update_gc_overhead_counter()`, the rolling average `long_term_gc_time_ratio()`, or the `GCHeapFreeLimit` free-space check. Even if it did, it fires at pause end, not at the OOM throw point where the counter reached the threshold.
-- No existing JFR event captures the GC overhead limit violation counter or the moment the JVM decides to throw.
+- No existing JFR event captures the GC overhead limit violation counter or the moment the JVM decides to throw. Specifically: `_gc_overhead_counter` (the consecutive-violation counter incremented by `update_gc_overhead_counter()`), `long_term_gc_time_ratio` (the rolling average GC time fraction), and `free_space_percent` at throw time are not present in any JFR event in `metadata.xml`.
 
 #### What it is used for
 
@@ -465,10 +465,10 @@ void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
 - `jdk.G1MMU`: measures pause compliance in a fixed window (ms units, G1-specific). Structurally different from Shenandoah's GCU%/MU% fraction — it answers "did the pause stay under the goal within a rolling window?" not "what fraction of wall-clock time was GC?".
 - `jdk.GCCPUTime`: records GC CPU time per pause (user/system/real times). **Explicitly does not support Shenandoah** — the event description in `metadata.xml` reads "Supported: G1GC, ParallelGC and SerialGC". `GCTraceCPUTime` is never constructed in Shenandoah's GC path (`shenandoahConcurrentGC.cpp`, `shenandoahDegeneratedGC.cpp`, `shenandoahFullGC.cpp`). Even if it were, per-pause CPU time is structurally different from GCU% across an entire concurrent phase window.
 - `jdk.ShenandoahEvacuationInformation`: records CSet region counts, used-before/after bytes, and free regions after evacuation (from `shenandoahTrace.cpp:32`). No CPU utilization fields — `gcuPercent`, `muPercent`, `periodSeconds` do not exist in this event.
-- `jdk.ShenandoahPromotionInformation`: records promotion counts by generation and region type. No CPU utilization data.
+- `jdk.ShenandoahPromotionInformation`: records promotion counts by generation and region type. **No CPU utilization fields** — `gcuPercent`, `muPercent`, and `periodSeconds` do not exist in this event. It fires once per collection, not per GC phase window.
 - `jdk.GarbageCollection`: records GC completion with cause and duration. Duration is the STW pause only; it does not capture GCU% across the full concurrent phase. The ratio `jdk.GarbageCollection.duration / inter-GC interval` is a crude approximation of pause-fraction, not the `gcuPercent` (which includes concurrent GC threads).
-- `jdk.ShenandoahHeapRegionStateChange`: records region state transitions; no time-fraction breakdown.
-- No Shenandoah-specific JFR event captures the `ShenandoahMmuTracker` `gcuPercent`/`muPercent` data.
+- `jdk.ShenandoahHeapRegionStateChange`: fires when a region transitions between `Empty`, `Regular`, `HumongousStart`, `HumongousContination`, `CSet`, `Pinned` etc. states — fine-grained region lifecycle events. No time-fraction breakdown; no `gcuPercent`, `muPercent`, or `periodSeconds` fields. This event tracks individual region state changes, not aggregate GC CPU consumption across a phase window.
+- No Shenandoah-specific JFR event captures the `ShenandoahMmuTracker` `gcuPercent`/`muPercent` data. The `ShenandoahMmuTracker` object fields (`_most_recent_gcu`, `_most_recent_mu`, `_most_recent_timestamp`, `_active_processors`) have no representation in any existing `jdk.Shenandoah*` JFR event.
 
 #### External references
 
@@ -598,7 +598,7 @@ const char* ShenandoahGenerationalControlThread::gc_mode_name(GCMode mode) {
 #### Why existing events don't cover this
 
 - `jdk.ShenandoahEvacuationInformation`: fires during CSet selection; records collection-set region counts, used-before/after, free regions, and immediate-garbage regions. **No heuristic decision fields** — only the resulting CSet composition, not why GC was triggered or which generation was targeted.
-- `jdk.ShenandoahPromotionInformation`: records per-generation bytes collected and humongous/regular promotion breakdown. **No trigger or decision fields**.
+- `jdk.ShenandoahPromotionInformation`: records per-generation bytes collected and humongous/regular promotion breakdown. **No trigger or decision fields** — does not carry `generation`, `triggerType`, `available`, `cause`, `anticipatedGcDurationMs`, `marginOfError`, or any heuristic output. It answers "how much was promoted?" not "why was this collection started?".
 - `jdk.ShenandoahHeapRegionStateChange`: fires after regions change state; does not capture the heuristic decision at the start of a cycle. No `generation`, `triggerType`, `available`, or `cause` fields.
 - `jdk.GCHeapSummary`: records heap sizes before/after GC (`heapSpace.used`, `heapSpace.size`); does not capture why GC was started, which generation was targeted, or any adaptive heuristic output (`anticipatedGcDurationMs`, `marginOfError`, fragmentation metrics).
 - `jdk.GarbageCollection`: records GC outcomes; the `cause` field carries a high-level GC cause string (e.g., `"GCInvokedWithForce"`) but not the adaptive heuristic reasoning — `triggerType`, `rate_average` vs. `rate_accelerated`, `fragmentationDensityPct`, `liveAtPrevMarkBytes`, or any of the diagnostic fields this event provides. An operator seeing only `jdk.GarbageCollection` cannot distinguish a rate-triggered GC from an expansion-failure-triggered GC.
@@ -753,18 +753,18 @@ The `badProgressCount` is `ShenandoahCollectorPolicy::_consecutive_degenerated_g
 A degenerated GC is Shenandoah's first-tier fallback: when a concurrent GC fails to keep up, the JVM falls back to a stop-the-world degenerated GC. If that too fails to make progress (e.g., heap is full and fragmented), the JVM escalates to Full GC (compacting, much longer pause). This event tells you **whether each fallback GC was productive**, and gives you an early warning of the escalation chain: `badProgressCount=1` means one consecutive failure, `badProgressCount=2` means the next failure triggers Full GC.
 
 **Tuning actions per `failedDimension`**:
-- `free_space`: heap free bytes are below `ShenandoahCriticalFreeThreshold` (default 1% of soft max). This is the hard gate — the degenerated GC ran but the heap remained critically low. Primary action: increase `-Xmx` or reduce live set. Secondary action: if live set cannot be reduced, lower `ShenandoahCriticalFreeThreshold` slightly (e.g., from 1% to 0.5%) to make the threshold less aggressive, but this risks triggering earlier escalation on the next cycle. Check `freePercent` value — if it is > 0.5%, the threshold may be set higher than necessary for this heap; if it is near 0%, OOM is genuinely imminent.
+- `free_space`: heap free bytes are below `ShenandoahCriticalFreeThreshold` (default 1% of soft max). This is the hard gate — the degenerated GC ran but the heap remained critically low. Primary action: increase `-Xmx` or reduce live set. Secondary action: if live set cannot be reduced, lower `ShenandoahCriticalFreeThreshold` slightly (e.g., from 1% to 0.5%) to make the threshold less aggressive, but this risks triggering earlier escalation on the next cycle. Check `freePercent` value — if it is > 0.5%, `ShenandoahCriticalFreeThreshold` is above what the workload actually requires (the heap had more free space than the threshold demanded but still failed the check because of the `is_good_progress()` short-circuit); if it is near 0%, OOM is genuinely imminent and only `-Xmx` increase helps.
 - `all_secondary`: free space passed (heap is not critically low) but GC made no measurable improvement on any of the three secondary dimensions. This means one of three things — and the sub-dimension that failed first determines the action: (1) **Used-space failure** (`usedFreed < 1 region`): GC ran but reclaimed less than one region's worth of objects. The live set is nearly the entire heap — every region has live objects. Action: lower `ShenandoahGarbageThreshold` (default 25%) to force collection of regions with lower garbage density, enabling GC to reclaim partially-occupied regions. (2) **Internal fragmentation failure** (`internalFragDelta < 1%`): GC did not reduce internal fragmentation (wasted space inside regions). Objects are pinned into fragmented regions. Action: increase `ShenandoahUnloadClassesFrequency` to run class unloading more often — pinned class objects are a common cause. (3) **External fragmentation failure** (`externalFragDelta < 1%`): free space is spread across many small segments and GC did not consolidate it. Same root cause as internal fragmentation; same action. Note: in the simplified 5-field event, these sub-dimensions are not individually exposed — `all_secondary` covers all three. The full 12-field version distinguishes them for targeted diagnosis.
 
 **Cross-event correlation**: join `jdk.ShenandoahReclaimProgress` with `jdk.ShenandoahCollectionDecision` on `gcId` to determine **what triggered the GC that then degenerated**. If `jdk.ShenandoahCollectionDecision.triggerType=expansion_failure` appears before a `jdk.ShenandoahReclaimProgress.failedDimension=free_space` event, the heap was already at capacity when the degenerated GC ran — `badProgressCount` escalation to 2 means Full GC is imminent and the root cause is `expansion_failure`, not fragmentation. Join with `jdk.ShenandoahEvacuationInformation` on `gcId` to see how many regions were evacuated in the degenerated GC — if `regionsEvacuated` is near 0 alongside `goodProgress=false`, the degenerated GC found no evacuatable regions at all, which confirms the `all_secondary` path. Track `badProgressCount` as a running series: count=0 after each good-progress event means the escalation counter was reset — a sequence 0→1→2 with no reset in between is the final warning before Full GC.
 
 #### Why existing events don't cover this
 
-- `jdk.ShenandoahCollectionDecision` (proposed): fires at the START of a cycle; `ReclaimProgress` fires at the END of a degenerated/full GC. They are not mergeable.
+- `jdk.ShenandoahCollectionDecision` (proposed): fires at the START of a cycle when the heuristic decides to begin GC; `ReclaimProgress` fires at the END of a degenerated/full GC when `is_good_progress()` is evaluated. They are not mergeable — their emission points are on different code paths (regulator thread at cycle start vs. control thread at cycle end), and `badProgressCount` only exists in `ShenandoahMetricsSnapshot`, not in the collection decision context.
 - `jdk.ShenandoahEvacuationInformation`: records CSet regions, used-before/after, free regions — evacuation outcome metrics, not the progress assessment or escalation counter. It says how much was evacuated; it does not say whether the degenerated GC passed the `is_good_progress()` gate or what value `badProgressCount` holds.
-- `jdk.ShenandoahPromotionInformation`: records promotion bytes per generation — no degeneration progress assessment, no free-space percentage, no escalation counter.
+- `jdk.ShenandoahPromotionInformation`: records promotion bytes per generation — no degeneration progress assessment, no free-space percentage, no escalation counter. There is no field in this event that corresponds to `freePassed`, `goodProgress`, `failedDimension`, or `_consecutive_degenerated_gcs_without_progress`.
 - `jdk.GarbageCollection`: records GC completion with cause and duration; does not expose `freePassed`, `goodProgress`, `failedDimension`, or `badProgressCount`. The cause field may say `"GCInvokedWithForce"` for a Full GC but gives no diagnostic information about why it was forced.
-- No existing JFR event exposes `_consecutive_degenerated_gcs_without_progress` — the counter that determines when the next degenerated GC triggers a Full GC.
+- No existing JFR event exposes `_consecutive_degenerated_gcs_without_progress` — the counter that determines when the next degenerated GC triggers a Full GC. This counter is the single field that gives advance warning of a Full GC: when it reaches 1 (one bad-progress degenerated GC recorded), the NEXT non-progress degenerated GC will trigger Full GC.
 
 #### External references
 
@@ -881,7 +881,7 @@ Shenandoah computes this dynamically from mortality rates, so the threshold adap
 - `jdk.GarbageCollection`: records GC type, cause, and duration; has no tenuring threshold field, no mortality-rate field, no per-age-cohort analysis. The cause string is always `shenandoah_concurrent_gc` for a normal young collection — it carries no information about whether the threshold was clamped or whether the algorithm found a high-mortality cohort.
 - `jdk.ShenandoahPromotionInformation`: records bytes promoted by generation and region type — the outcome of promotion decisions; does not expose the tenuring threshold or the mortality-rate computation that determined it.
 - `jdk.TenuringDistribution` (G1/Parallel): records per-age-bucket object counts; exists only for G1 and Parallel GC, not Shenandoah. Even if it existed for Shenandoah, it would expose the age distribution as an input, not the computed threshold or `ShenandoahGenerationalTenuringMortalityRateThreshold` boundary that determined when to stop scanning.
-- No existing JFR event exposes the `compute_tenuring_threshold()` algorithm result or the min/max clamp bounds in effect for Shenandoah.
+- No existing JFR event exposes the `compute_tenuring_threshold()` algorithm result or the min/max clamp bounds in effect for Shenandoah. Specifically: `new_threshold` (the computed value), `min` (`ShenandoahGenerationalMinTenuringAge`), and `max` (`ShenandoahGenerationalMaxTenuringAge`) from the `log_info(gc,age)` call at `shenandoahAgeCensus.cpp:258` have no representation in any existing JFR event. `jdk.TenuringDistribution` provides age-bucket counts for G1/Parallel but not for Shenandoah, and even if it did, it would expose the input (age distribution), not the computed threshold output.
 
 #### External references
 
@@ -1016,7 +1016,7 @@ const uint tenuring_threshold = clamp((uint)round(tenuring_threshold_raw), lower
 
 - `jdk.ZYoungGarbageCollection`: **already has `tenuringThreshold` field** (set in `zTracer.cpp:104` to `ZGeneration::young()->tenuring_threshold()`). This is the per-collection threshold value. However, it has **no `reason` field** — an operator cannot tell whether the threshold came from a `"Promote All"` emergency, a `-XX:ZTenuringThreshold` flag override, or the dynamic computation. The `reason` field is the unique contribution of this proposal.
 - `jdk.ZGCConfiguration`: records the static `-XX:ZTenuringThreshold` flag value at JVM startup. Not the per-cycle selection (which can differ from the flag when `"Promote All"` or `"Computed"` paths fire).
-- No existing JFR event covers the selection reason for ZGC's per-cycle tenuring threshold.
+- No existing JFR event covers the selection reason for ZGC's per-cycle tenuring threshold. `jdk.ZYoungGarbageCollection` carries the resulting `tenuringThreshold` value but not why it was chosen (`"Computed"` vs `"ZTenuringThreshold"` vs `"Promote All"`). Without `reason`, a threshold of 1 is ambiguous: it could be normal allocation-pressure adaptation, an admin override, or an OOM-risk emergency flush — three scenarios requiring completely different operator responses.
 
 #### External references
 
@@ -1086,7 +1086,7 @@ Fires at end of every ZGC generation collection (both young and old).
 
 #### Why existing events don't cover this
 
-- No existing JFR event exposes nmethod registration counts for any GC.
+- No existing JFR event exposes nmethod registration counts for any GC. `ZNMethodTable::registered_nmethods()` (`_nregistered`) and the stale-slot count (`_nunregistered`) have no JFR representation. The nmethod table is a ZGC-specific structure separate from the code cache — it tracks only the subset of compiled methods that contain heap references (oops in compiled frames) that ZGC must scan per collection.
 - `jdk.CodeCacheStatistics`: carries `entryCount`, `methodCount`, `adaptorCount`, `unallocatedCapacity` for each code heap (`codeBlobType`) — global code cache occupancy metrics. Does not expose the ZGC-specific nmethod table (`ZNMethodTable`) which is a separate data structure, nor does it expose `_nunregistered` stale slots or per-GC scan costs.
 
 #### What it is used for
@@ -1101,7 +1101,7 @@ A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the t
 **Tuning actions**:
 - `staleNMethodSlots / registeredNMethods > 10%` across ≥ 3 consecutive young collections → check deoptimization rate via `jdk.Deoptimization` events (each deoptimization unregisters a compiled method and leaves a stale slot); if code-cache eviction is the root cause, increase `-XX:ReservedCodeCacheSize`; if JVM TI agents (e.g., debugger, coverage tools) are redefining classes at high rate, that is the source.
 - `registeredNMethods > 100K` and ZGC nmethod-scan phase visible in GC logs → investigate code cache tiers: reduce JIT aggressiveness with `-XX:TieredStopAtLevel=3` (disable C2 to reduce compiled method count at cost of peak throughput); increase code cache with `-XX:ReservedCodeCacheSize`; on GraalVM or polyglot workloads, review truffle partial evaluation producing excessive nmethod compilations.
-- `staleNMethodSlots` never reaches 0 between rebuilds → rebuilds may be suppressed; check for concurrent GC contention preventing table rebuilds during collection cycles.
+- `staleNMethodSlots` never reaches 0 between rebuilds → the `ZNMethodTable` rebuild is either not completing or not triggering. Rebuilds occur at safepoints during GC; if the stale count grows monotonically across 10+ consecutive young collections, confirm rebuild is scheduled: check `-Xlog:gc+nmethod=debug` for "Unregister nmethod" events. If unregistrations are happening but the table is not shrinking, the rebuild trigger threshold is not being reached — this is a ZGC internals issue that warrants filing a JDK bug rather than a tuning change.
 
 **Cross-event correlation**: join `jdk.ZNMethodRegistration` with `jdk.ZYoungGarbageCollection` or `jdk.ZOldGarbageCollection` on `gcId` to correlate `registeredNMethods` against GC pause duration — if young GC duration is growing as `registeredNMethods` grows, nmethod scanning is contributing to pause time. Join with `jdk.Deoptimization` by time window: a spike in `staleNMethodSlots` in one event followed immediately by multiple `jdk.Deoptimization` events explains the source of the stale slots — each deoptimization removes a compiled method from use but leaves its table slot until the next rebuild. Join with `jdk.CodeCacheStatistics` by `startTime` proximity: compare `jdk.CodeCacheStatistics.entryCount` (total code cache entries) against `registeredNMethods` — a large discrepancy (many code cache entries but few registered nmethods) is expected and normal, since only nmethods with heap references are registered in the ZGC table; a near-equal count indicates nearly all compiled methods contain heap references, which may inflate nmethod scan cost disproportionately.
 
@@ -1194,10 +1194,10 @@ G1 concurrent refinement processes dirty card queue (DCQ) entries between GC pau
 
 #### Why existing events don't cover this
 
-- `jdk.G1AdaptiveIHOP`, `jdk.G1BasicIHOP`: cover old-gen occupancy threshold for initiating concurrent marking (a separate policy); carry no refinement fields whatsoever.
+- `jdk.G1AdaptiveIHOP`, `jdk.G1BasicIHOP`: cover old-gen occupancy threshold for initiating concurrent marking (a separate policy); carry no refinement fields whatsoever. `jdk.G1AdaptiveIHOP` contains `threshold`, `thresholdPercent`, `ihopPercent`, `recentMutatorAllocationSize`, `recentMutatorDuration`, `recentGCDuration`, and `recentOldGenAllocationSize` — none of these are dirty-card or refinement metrics.
 - `jdk.EvacuationInformation`: records per-GC-pause evacuation outcome (regions evacuated, bytes copied, region counts) — fires at pause end, not between pauses. Does not carry `cardsScanned`, `cardsPending`, `cardRefineMs`, or any refinement throughput metric.
-- `jdk.GarbageCollection`: records GC cause, duration, and GC ID — outcome event; no refinement data.
-- No existing JFR event exposes the dirty-card queue backlog (`cardsPending`), refinement throughput (`cardRefineMs`, `cardsScanned`), or the write-churn indicator (`cardsNoCrossRegion`).
+- `jdk.GarbageCollection`: records GC cause, duration, and GC ID — outcome event; no refinement data. The `duration` field in `jdk.GarbageCollection` reflects the total GC pause; it does not decompose into the `Update RS` sub-phase where card backlog processing occurs.
+- No existing JFR event exposes the dirty-card queue backlog (`cardsPending`), refinement throughput (`cardRefineMs`, `cardsScanned`), or the write-churn indicator (`cardsNoCrossRegion`). These are only available via `-Xlog:gc+refine=debug`.
 
 #### External references
 
@@ -1465,8 +1465,8 @@ Mixed GC is G1's mechanism for reclaiming old-gen space. If mixed GC is not sele
 - `jdk.EvacuationInformation`: records per-pause evacuation outcome — `cSetRegions`, `cSetUsedBefore`, `cSetUsedAfter`, `pinnedInQueue`. These are aggregate result metrics; they do not carry the candidate count before selection, the predicted time per candidate, the `minRegions`/`maxRegions` bounds, or why selection terminated early.
 - `jdk.G1AdaptiveIHOP` / `jdk.G1BasicIHOP`: cover the initiating-heap-occupancy threshold for starting concurrent marking — a separate policy entirely. They say nothing about which old-gen regions were selected for mixed GC or how many candidates were available.
 - `jdk.G1HeapSummary`: records `edenUsedSize`, `edenTotalSize`, `survivorUsedSize`, `metaspaceUsedSize` at GC boundaries — heap-accounting fields only; no region selection reasoning, no `stopReason`, no `availableRegions`.
-- `jdk.GarbageCollection`: records GC cause and duration; the cause `g1_mixed` tells you that mixed GC ran but carries none of the selection-decision data.
-- No existing JFR event exposes `availableRegions`, `selectedRegions`, `stopReason`, or the `minRegions`/`maxRegions` bounds that determine how many old-gen regions G1 will collect per mixed pause.
+- `jdk.GarbageCollection`: records GC cause and duration; the cause `g1_mixed` tells you that mixed GC ran but carries none of the selection-decision data — no `availableRegions`, `selectedRegions`, `stopReason`, `minRegions`, `maxRegions`, or predicted time per candidate. The `duration` field covers the total pause but does not decompose into the region-selection overhead vs. actual evacuation.
+- No existing JFR event exposes `availableRegions`, `selectedRegions`, `stopReason`, or the `minRegions`/`maxRegions` bounds that determine how many old-gen regions G1 will collect per mixed pause. Without these, an operator seeing short mixed GC pauses cannot tell whether mixed GC is completing its full selection budget (healthy) or stopping early due to time pressure (`"Predicted time too high"`) — the two scenarios call for opposite responses (leave `-XX:MaxGCPauseMillis` alone vs. raise it).
 
 #### External references
 
@@ -1612,8 +1612,8 @@ G1 adjusts the committed heap between pauses based on GC CPU usage vs. a target 
 
 - `jdk.G1AdaptiveIHOP`: covers old-gen occupancy threshold for initiating concurrent marking; carries `threshold`, `thresholdPercent`, `ihopPercent`, `recentMutatorAllocationSize` — none of these are CPU-usage deviation fields. Does not record committed heap resize.
 - `jdk.G1HeapSummary`: carries `heapSpace` (reserved/committed/used) and `edenUsedSize`/`edenTotalSize`/`survivorUsedSize`/`metaspaceUsedSize` — size outcomes. By diffing consecutive events you can compute the resize delta, but you cannot determine whether the resize was driven by GC CPU usage exceeding `upperThresholdPct`, by the long-term check, or why it was suppressed (`atLimit=true`). The `deviationCounter`, `scaleFactorPct`, and `gcCpuUsageTargetPct` fields are absent entirely.
-- `jdk.GCHeapSummary`: same — `heapSpace` reserved/committed/used; no sizing-decision inputs.
-- `jdk.GCConfiguration`: records `gcTimeRatio` at startup; does not expose the per-pause deviation counter or whether the heap reached a resize threshold.
+- `jdk.GCHeapSummary`: records `heapSpace` (reserved/committed/used) — the same size-outcome limitation as `jdk.G1HeapSummary`. Does not carry any of: `deviationCounter`, `shortTermGcCpuUsagePct`, `upperThresholdPct`, `lowerThresholdPct`, `gcCpuUsageTargetPct`, `scaleFactorPct`, `expand`, `atLimit`, or `resizeBytes`.
+- `jdk.GCConfiguration`: records `gcTimeRatio` at JVM startup (`GCTimeRatio` flag value); does not expose the per-pause deviation counter, whether the heap reached a resize threshold this pause, or the effective scaled `gcCpuUsageTargetPct` (which differs from `1/(1+GCTimeRatio)` when heap is below half of max capacity — see `scale_with_heap()` in `g1HeapSizingPolicy.cpp:131`).
 
 #### External references
 
@@ -1748,11 +1748,11 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 #### Why existing events don't cover this
 
 - `jdk.ZYoungGarbageCollection`: fires after a GC is chosen and completed; records `tenuringThreshold`, `pause` duration, and cause. Does not capture ticks where no GC triggered — the most important case for proactive diagnosis. No `timeUntilMinorOOM`, no rule name, no heap-free fraction at decision time.
-- `jdk.ZOldGarbageCollection`: same limitation — outcome event, not trigger-decision event. No director rule fields.
+- `jdk.ZOldGarbageCollection`: same limitation — outcome event after an old collection completes; records `pause`, cause, and GC ID. No director rule fields, no `heapFreePercent`, no `timeUntilMinorOOM`, and no non-triggering ticks.
 - `jdk.ZAllocationStall`: fires when an allocating thread had to stall waiting for memory — this is the **failure case** that ZGC's proactive director is supposed to prevent. `jdk.ZDirectorRule` is complementary: it shows the prevention-side decisions; `jdk.ZAllocationStall` shows when prevention failed. If `jdk.ZAllocationStall` events appear despite `jdk.ZDirectorRule` showing `timeUntilMinorOOM > 2s`, the rate model is under-predicting actual consumption.
-- `jdk.GarbageCollection` (base): records GC completion with cause, duration, and GC ID — no director rule fields, no non-triggering ticks.
+- `jdk.GarbageCollection` (base): records GC completion with cause, duration, and GC ID — no director rule fields, no non-triggering ticks. The `cause` string may be `"ZAllocationRate"` when the alloc-rate rule fires, but does not distinguish `_z_allocation_rate_static` from `_z_allocation_rate_dynamic`, and carries no `timeUntilMinorOOM` or `heapFreePercent` at decision time.
 - `jdk.ZStatisticsCounter` and `jdk.ZStatisticsSampler`: **experimental** events (`experimental="true"` in `metadata.xml` — not enabled by default, not stable API). They expose internal ZGC metric counters/samplers by opaque enum ID, not structured director rule evaluations. They do not provide per-tick trigger reasoning or `timeUntilMinorOOM`.
-- No existing JFR event captures ZGC director rule evaluation or non-triggering ticks — the complete silence on idle or below-threshold ticks is the fundamental gap this event fills.
+- No existing JFR event captures ZGC director rule evaluation or non-triggering ticks — the complete silence on idle or below-threshold ticks is the fundamental gap this event fills. Every tick where `triggeredMinorRule=null` and `triggeredMajorRule=null` currently produces no JFR record; the only way to distinguish "heap is genuinely idle" from "allocation pressure is building toward the trigger threshold" is with this event's `heapFreePercent` and `timeUntilMinorOOM` fields.
 
 #### External references
 
@@ -1931,10 +1931,10 @@ Parallel GC's adaptive size policy implements a feedback control loop that resiz
 #### Why existing events don't cover this
 
 - `jdk.PSHeapSummary`: records resulting sizes — `edenSpace`, `fromSpace`, `toSpace`, `oldSpace` (used/size/start). These are the *outputs* of the sizing policy. They do not carry `mutator_time_percent()`, `minor_gc_time_estimate()`, `_gc_distance_seconds_seq`, `promoted_bytes_estimate()`, or any field from `compute_desired_eden_size()` or `compute_old_gen_shrink_bytes()`.
-- `jdk.GCHeapSummary`: records `heapSpace` reserved/committed/used; same limitation.
+- `jdk.GCHeapSummary`: records `heapSpace` (reserved/committed/used) as a GC-boundary snapshot — the same limitation as `jdk.PSHeapSummary`. Does not carry any of: `throughput`, `minorPauseMs`, `pauseGoalMs`, `edenSizingBranch`, `desiredEden`, `gcDistanceSec`, `survivorOverflow`, `promotedBytesEstimate`, `shrinkBytes`, or `oldGenFree`.
 - `jdk.TenuringDistribution` (Parallel): records per-age-bucket counts; shows the age distribution that *results from* the current tenuring threshold, not the `promoted_bytes_estimate()` model or the `survivorOverflow` signal that drives policy adjustments.
 - `jdk.GCConfiguration`: records `gcTimeRatio`, `newRatio` etc. at startup; does not expose the per-cycle `mutator_time_percent()` measurement or whether the throughput goal was currently met.
-- No existing JFR event exposes the `PSAdaptiveSizePolicy` per-cycle decision inputs, branch taken (`throughput_grow`/`pause_shrink`/etc.), or the old-gen shrink calculation.
+- No existing JFR event exposes the `PSAdaptiveSizePolicy` per-cycle decision inputs, branch taken (`throughput_grow`/`pause_shrink`/`distance_grow`/`distance_shrink`/`unchanged`), or the old-gen shrink calculation. Specifically: `mutator_time_percent()`, `minor_gc_time_estimate()`, `_gc_distance_seconds_seq.davg()`, `promoted_bytes_estimate()`, and `compute_old_gen_shrink_bytes()` output are absent from all existing JFR events. The `edenSizingBranch` which-path-fired discriminator has no analogue in any other JFR event.
 
 #### External references
 
