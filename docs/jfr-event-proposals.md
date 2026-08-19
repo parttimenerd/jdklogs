@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 70)
+**Last updated**: 2026-08-19 (pass 71)
 
 ---
 
@@ -892,11 +892,9 @@ Shenandoah computes this dynamically from mortality rates, so the threshold adap
 
 > "Dynamic tenuring: The generational Shenandoah collector dynamically adjusts the tenuring threshold based on mortality rates observed in previous collections."
 
-Oracle ZGC Tuning Guide — [ZGC](https://docs.oracle.com/en/java/javase/26/gctuning/z-garbage-collector1.html) (for comparison context):
+[JDK-8314599](https://bugs.openjdk.org/browse/JDK-8314599) — "GenShen: Couple adaptive tenuring and generation size budgeting": introduced the mortality-rate based `compute_tenuring_threshold()` algorithm in `shenandoahAgeCensus.cpp`, which is the core computation that `jdk.ShenandoahTenuringThreshold` exposes. This bug established the current contract: the tenuring threshold is recomputed each young collection, clamped to `[ShenandoahMinTenuringAge, ShenandoahMaxTenuringAge]`, and driven by observed per-age-bucket mortality rates rather than simple object age. The field definitions in `jdk.ShenandoahTenuringThreshold` — `tenuringThreshold`, `minTenuringAge`, `maxTenuringAge` — map directly to the three values this algorithm produces.
 
-> "ZGC uses a dynamic tenuring threshold to decide when to promote objects from the young generation to the old generation."
-
-The Shenandoah algorithm uses mortality-rate analysis (`compute_tenuring_threshold()` at `shenandoahAgeCensus.cpp:264`) rather than the simple age-based threshold in G1 and Parallel GC. `jdk.ShenandoahTenuringThreshold` is the only way to observe this per-cycle computation in production.
+The Shenandoah algorithm uses mortality-rate analysis (`compute_tenuring_threshold()` in `shenandoahAgeCensus.cpp`) rather than the simple age-based threshold in G1 and Parallel GC. `jdk.ShenandoahTenuringThreshold` is the only way to observe this per-cycle computation in production.
 
 #### Open questions / upstream concerns
 
@@ -1106,6 +1104,19 @@ A steadily growing `staleNMethodSlots / registeredNMethods` ratio suggests the t
 
 **Cross-event correlation**: join `jdk.ZNMethodRegistration` with `jdk.ZYoungGarbageCollection` or `jdk.ZOldGarbageCollection` on `gcId` to correlate `registeredNMethods` against GC pause duration — if young GC duration is growing as `registeredNMethods` grows, nmethod scanning is contributing to pause time. Join with `jdk.Deoptimization` by time window: a spike in `staleNMethodSlots` in one event followed immediately by multiple `jdk.Deoptimization` events explains the source of the stale slots — each deoptimization removes a compiled method from use but leaves its table slot until the next rebuild. Join with `jdk.CodeCacheStatistics` by `startTime` proximity: compare `jdk.CodeCacheStatistics.entryCount` (total code cache entries) against `registeredNMethods` — a large discrepancy (many code cache entries but few registered nmethods) is expected and normal, since only nmethods with heap references are registered in the ZGC table; a near-equal count indicates nearly all compiled methods contain heap references, which may inflate nmethod scan cost disproportionately.
 
+#### Why existing events don't cover this
+
+- No existing JFR event exposes nmethod registration counts for any GC. `ZNMethodTable::registered_nmethods()` (`_nregistered`) and the stale-slot count (`_nunregistered`) have no JFR representation. The nmethod table is a ZGC-specific structure separate from the code cache — it tracks only the subset of compiled methods that contain heap references (oops in compiled frames) that ZGC must scan per collection.
+- `jdk.CodeCacheStatistics`: carries `entryCount`, `methodCount`, `adaptorCount`, `unallocatedCapacity` for each code heap (`codeBlobType`) — global code cache occupancy metrics. Does not expose the ZGC-specific nmethod table (`ZNMethodTable`) which is a separate data structure, nor does it expose `_nunregistered` stale slots or per-GC scan costs. Without `jdk.ZNMethodRegistration`, there is no way to determine from a JFR recording how much of a ZGC pause is attributable to nmethod scanning, nor whether stale slots from deoptimization are accumulating.
+
+#### External references
+
+[JDK-8307058](https://bugs.openjdk.org/browse/JDK-8307058) — "Implementation of Generational ZGC" (JEP 439, merged JDK 21). Introduced the `ZNMethodTable` per-generation scanning architecture where ZGC registers and scans nmethods containing heap references each collection cycle. The nmethod table is shared across generations — both young and old ZGC collections contribute to scan cost.
+
+[JDK-8349652](https://bugs.openjdk.org/browse/JDK-8349652) — "Rewire nmethod oop load barriers" (2024): refactored how nmethod entry barriers interact with the ZGC load barrier, directly affecting `ZNMethodTable` iteration behavior. The `staleNMethodSlots` counter measures the impact of this barrier-rewiring on unregistration latency.
+
+Oracle ZGC Tuning Guide — [ZGC](https://docs.oracle.com/en/java/javase/26/gctuning/z-garbage-collector1.html):
+
 > "ZGC must scan all registered nmethods during each GC cycle to locate object references in compiled code (oops in compiled frames). The cost of this scan grows with the size of the nmethod table."
 
 `jdk.CodeCacheStatistics` reports aggregate code cache occupancy but gives no signal about the ZGC-specific nmethod table (which is a separate data structure). There is no existing JFR event that exposes `ZNMethodTable::registered_nmethods()` or the stale-slot count.
@@ -1206,7 +1217,9 @@ Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](ht
 
 The Oracle tuning guide explicitly calls out `-XX:G1ConcRefinementThreads` and the `Pending Cards` metric as controls for GC pause time — yet those knobs are currently only observable via `-Xlog:gc+refine=debug`. `jdk.G1ConcurrentRefinementSweep` makes these observable in production JFR without requiring debug logging.
 
-[G1 Concurrent Refinement redesign (JDK-8382089, JDK-8383794, and related)](https://bugs.openjdk.org/browse/JDK-8382089) — ongoing G1 refinement improvements: changed how the sweep state machine runs and how `no_cross_region` results are returned. The `cardsNoCrossRegion` field directly measures write-churn: cards that were dirtied but whose cross-region references were subsequently overwritten before refinement ran, producing no useful work.
+[JEP 522: G1 GC: Improve Throughput by Reducing Synchronization](https://bugs.openjdk.org/browse/JDK-8342382) — implemented in JDK 25 (commit 8d5c005). JEP 522 restructured the G1 concurrent refinement state machine to reduce synchronization overhead between refinement threads. As part of this work, the sweep state machine (`complete_refinement()` / `handle_ongoing_refinement_at_safepoint()`) was refactored, motivating the need for JFR observability: the redesign changed how per-sweep statistics are accumulated and when they are emitted. The `cardsNoCrossRegion` field in `jdk.G1ConcurrentRefinementSweep` directly measures the write-churn that JEP 522 optimized — cards dirtied by writes that were subsequently overwritten before refinement ran, producing no cross-region references.
+
+[G1 Concurrent Refinement redesign (JDK-8382089, JDK-8383794, and related)](https://bugs.openjdk.org/browse/JDK-8382089) — ongoing G1 refinement improvements post-JEP 522: changed how the sweep state machine runs and how `no_cross_region` results are returned. The `cardsNoCrossRegion` field directly measures write-churn: cards that were dirtied but whose cross-region references were subsequently overwritten before refinement ran, producing no useful work.
 
 #### Open questions / upstream concerns
 
@@ -1324,6 +1337,8 @@ Oracle JDK 26 G1 GC Tuning Guide — [Garbage-First Garbage Collector Tuning](ht
 > "By default, the heuristics allow G1 to use up to the number of parallel GC threads. Work exceeding the capacity of the refinement threads will spill over into the garbage collection pause."
 
 `jdk.G1ConcurrentRefinementPolicy` directly exposes the `threadsWanted` output of this heuristic and the `pendingCardsTarget` it is trying to satisfy — without debug logging operators cannot see whether the refinement-thread heuristic is converging or diverging from its target.
+
+[JEP 522: G1 GC: Improve Throughput by Reducing Synchronization](https://bugs.openjdk.org/browse/JDK-8342382) (JDK 25): restructured concurrent refinement synchronization. The per-pause `adjust_threads_wanted()` path that drives `threadsWanted` is part of the subsystem JEP 522 optimized. The `predictedPendingCards` and `dirtiedCardRate` fields in this event directly measure the write-throughput characteristics that JEP 522 targeted.
 
 #### Open questions / upstream concerns
 
@@ -1609,6 +1624,10 @@ Oracle GC Ergonomics Guide also notes:
 > "If the maximum pause time goal is not being met, then the size of only one generation is shrunk at a time."
 
 This interacts with `jdk.G1HeapResize`'s `atLimit` field: when both `-Xmx` and pause constraints are binding, `atLimit=true` confirms that the heap cannot grow despite the policy wanting it to.
+
+[JDK-8238687](https://bugs.openjdk.org/browse/JDK-8238687) / [JDK-8247843](https://bugs.openjdk.org/browse/JDK-8247843) — "G1: Improve G1HeapSizingPolicy": restructured the adaptive heap sizing policy, changed the `GCTimeRatio` default from 12 to 24 (target GC overhead from 7.7% to 4%), and introduced `resize_heap_after_young_collection()` to separate young-collection resizing from full-collection resizing. This is the architectural basis for the `expand` boolean in `jdk.G1HeapResize` — which only fires on the young-collection resize path introduced by this bug. The `gcCpuUsageTargetPct` field is directly derived from the `GCTimeRatio` arithmetic this change restructured: `gcCpuUsageTargetPct = 1 / (1 + GCTimeRatio)` × heap-scale factor.
+
+[JDK-8359348](https://bugs.openjdk.org/browse/JDK-8359348) — "G1: Improve cpu usage measurements for heap sizing": renamed `compute_pause_time_ratios()` to `update_gc_time_ratios()` and `long_term_pause_time_ratio()` to `long_term_gc_time_ratio()`, and extended the measurement to account for concurrent GC CPU usage rather than pause-only time. This directly affects what `gcCpuPct` measures in `jdk.G1HeapResize`: post-JDK-8359348, the value includes both STW pause time and concurrent marking/refinement CPU cost, making it a truer picture of GC overhead. The renamed method `long_term_gc_time_ratio()` is the rolling average that `deviationCounter` accumulates deviation against.
 
 #### Open questions / upstream concerns
 
