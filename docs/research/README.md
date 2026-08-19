@@ -45,7 +45,9 @@ How Shenandoah generational mode decides when to start young and old collections
 
 - **Critique pass 60** (2026-08-19): ZDirectorRule diagnostic pattern upgrades — two short/incomplete pattern bullets completed with action paths. (1) `triggeredMinorRule="_z_allocation_rate"` with decreasing `timeUntilMinorOOM`: added explicit "stalls imminent when timeUntilMinorOOM < GC duration" threshold (0.1–0.5s for ZGC minor) and concrete action (`ZYoungGenerationSizePercent` increase, then `-Xmx`). (2) `triggeredMajorRule="_z_warmup"` in steady state: expanded from "should only fire during initial heap fill" to full semantics — warmup rule threshold explained, production-load occurrence diagnosis (heap oversized for workload), no-action baseline with explicit lower-Xmx exception.
 
-## Event Status Summary (as of 2026-08-19, pass 60)
+- **Critique pass 61** (2026-08-19): "Why existing events" specificity pass — thin bullets upgraded with field names and concrete gap statements. (1) ShenandoahMMU: G1MMU bullet upgraded with structural distinction ("did the pause stay under goal?" vs. "what fraction of wall-clock time was GC?"); GarbageCollection bullet upgraded with specific missing fields; ShenandoahHeapRegionStateChange and ShenandoahPromotionInformation bullets made distinct. (2) ShenandoahCollectionDecision: ShenandoahHeapRegionStateChange bullet upgraded with missing field names; GCHeapSummary bullet upgraded with specific missing field list; GarbageCollection bullet upgraded with explanation of why cause string is insufficient. (3) ShenandoahReclaimProgress: ShenandoahEvacuationInformation bullet upgraded with "what it says vs. what it doesn't say"; ShenandoahPromotionInformation, GarbageCollection, and "no existing event" bullets upgraded with missing field names and consequence descriptions. (4) ZDirectorRule: ZYoungGarbageCollection, ZOldGarbageCollection, and GarbageCollection bullets upgraded with specific missing fields; final "no existing event" bullet reframed as the core gap statement.
+
+## Event Status Summary (as of 2026-08-19, pass 61)
 
 | Event | Priority | Status |
 |---|---|---|

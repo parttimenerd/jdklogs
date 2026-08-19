@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 60)
+**Last updated**: 2026-08-19 (pass 61)
 
 ---
 
@@ -462,12 +462,13 @@ void ShenandoahMmuTracker::update_utilization(size_t gcid, const char* msg) {
 
 #### Why existing events don't cover this
 
-- `jdk.G1MMU`: measures pause compliance in a fixed window (ms units, G1-specific). Structurally different from Shenandoah's GCU%/MU% fraction.
+- `jdk.G1MMU`: measures pause compliance in a fixed window (ms units, G1-specific). Structurally different from Shenandoah's GCU%/MU% fraction — it answers "did the pause stay under the goal within a rolling window?" not "what fraction of wall-clock time was GC?".
 - `jdk.GCCPUTime`: records GC CPU time per pause (user/system/real times). **Explicitly does not support Shenandoah** — the event description in `metadata.xml` reads "Supported: G1GC, ParallelGC and SerialGC". `GCTraceCPUTime` is never constructed in Shenandoah's GC path (`shenandoahConcurrentGC.cpp`, `shenandoahDegeneratedGC.cpp`, `shenandoahFullGC.cpp`). Even if it were, per-pause CPU time is structurally different from GCU% across an entire concurrent phase window.
-- `jdk.ShenandoahEvacuationInformation`: records collection-set region counts, used-before/after, free regions (from `shenandoahTrace.cpp:32`). No CPU utilization data.
+- `jdk.ShenandoahEvacuationInformation`: records CSet region counts, used-before/after bytes, and free regions after evacuation (from `shenandoahTrace.cpp:32`). No CPU utilization fields — `gcuPercent`, `muPercent`, `periodSeconds` do not exist in this event.
 - `jdk.ShenandoahPromotionInformation`: records promotion counts by generation and region type. No CPU utilization data.
-- `jdk.GarbageCollection`, `jdk.ShenandoahHeapRegionStateChange`: record GC outcomes and region states; do not capture time-fraction breakdown between GC and mutator.
-- No Shenandoah-specific JFR event captures the MMU tracker data.
+- `jdk.GarbageCollection`: records GC completion with cause and duration. Duration is the STW pause only; it does not capture GCU% across the full concurrent phase. The ratio `jdk.GarbageCollection.duration / inter-GC interval` is a crude approximation of pause-fraction, not the `gcuPercent` (which includes concurrent GC threads).
+- `jdk.ShenandoahHeapRegionStateChange`: records region state transitions; no time-fraction breakdown.
+- No Shenandoah-specific JFR event captures the `ShenandoahMmuTracker` `gcuPercent`/`muPercent` data.
 
 #### External references
 
@@ -598,9 +599,9 @@ const char* ShenandoahGenerationalControlThread::gc_mode_name(GCMode mode) {
 
 - `jdk.ShenandoahEvacuationInformation`: fires during CSet selection; records collection-set region counts, used-before/after, free regions, and immediate-garbage regions. **No heuristic decision fields** — only the resulting CSet composition, not why GC was triggered or which generation was targeted.
 - `jdk.ShenandoahPromotionInformation`: records per-generation bytes collected and humongous/regular promotion breakdown. **No trigger or decision fields**.
-- `jdk.ShenandoahHeapRegionStateChange`: fires after regions change state; does not capture the heuristic decision at the start of a cycle.
-- `jdk.GCHeapSummary`: records heap sizes before/after GC; does not capture why GC was started.
-- `jdk.GarbageCollection`: records GC outcomes; the `cause` field exists but does not capture the rich heuristic reasoning (trigger type, rates, fragmentation metrics).
+- `jdk.ShenandoahHeapRegionStateChange`: fires after regions change state; does not capture the heuristic decision at the start of a cycle. No `generation`, `triggerType`, `available`, or `cause` fields.
+- `jdk.GCHeapSummary`: records heap sizes before/after GC (`heapSpace.used`, `heapSpace.size`); does not capture why GC was started, which generation was targeted, or any adaptive heuristic output (`anticipatedGcDurationMs`, `marginOfError`, fragmentation metrics).
+- `jdk.GarbageCollection`: records GC outcomes; the `cause` field carries a high-level GC cause string (e.g., `"GCInvokedWithForce"`) but not the adaptive heuristic reasoning — `triggerType`, `rate_average` vs. `rate_accelerated`, `fragmentationDensityPct`, `liveAtPrevMarkBytes`, or any of the diagnostic fields this event provides. An operator seeing only `jdk.GarbageCollection` cannot distinguish a rate-triggered GC from an expansion-failure-triggered GC.
 
 #### What it is used for
 
@@ -760,10 +761,10 @@ A degenerated GC is Shenandoah's first-tier fallback: when a concurrent GC fails
 #### Why existing events don't cover this
 
 - `jdk.ShenandoahCollectionDecision` (proposed): fires at the START of a cycle; `ReclaimProgress` fires at the END of a degenerated/full GC. They are not mergeable.
-- `jdk.ShenandoahEvacuationInformation`: records CSet regions, used-before/after, free regions — evacuation outcome metrics, not the progress assessment or escalation counter.
-- `jdk.ShenandoahPromotionInformation`: records promotion bytes per generation — no degeneration progress assessment.
-- `jdk.GarbageCollection`: records GC completion; does not expose the progress assessment or the escalation counter.
-- No existing JFR event exposes `_consecutive_degenerated_gcs_without_progress`.
+- `jdk.ShenandoahEvacuationInformation`: records CSet regions, used-before/after, free regions — evacuation outcome metrics, not the progress assessment or escalation counter. It says how much was evacuated; it does not say whether the degenerated GC passed the `is_good_progress()` gate or what value `badProgressCount` holds.
+- `jdk.ShenandoahPromotionInformation`: records promotion bytes per generation — no degeneration progress assessment, no free-space percentage, no escalation counter.
+- `jdk.GarbageCollection`: records GC completion with cause and duration; does not expose `freePassed`, `goodProgress`, `failedDimension`, or `badProgressCount`. The cause field may say `"GCInvokedWithForce"` for a Full GC but gives no diagnostic information about why it was forced.
+- No existing JFR event exposes `_consecutive_degenerated_gcs_without_progress` — the counter that determines when the next degenerated GC triggers a Full GC.
 
 #### External references
 
@@ -1746,12 +1747,12 @@ ZGC runs a director thread that evaluates rules every `~1/DecisionHz` seconds (d
 
 #### Why existing events don't cover this
 
-- `jdk.ZYoungGarbageCollection`: fires after GC is chosen; does not capture ticks where no GC triggered.
-- `jdk.ZOldGarbageCollection`: same — outcome event, not trigger-decision event.
-- `jdk.ZAllocationStall`: fires when an allocating thread had to stall waiting for memory — this is the **failure case** that ZGC's proactive director is supposed to prevent. `jdk.ZDirectorRule` is complementary: it shows the prevention-side decisions; `jdk.ZAllocationStall` shows when prevention failed.
-- `jdk.GarbageCollection` (base): same.
+- `jdk.ZYoungGarbageCollection`: fires after a GC is chosen and completed; records `tenuringThreshold`, `pause` duration, and cause. Does not capture ticks where no GC triggered — the most important case for proactive diagnosis. No `timeUntilMinorOOM`, no rule name, no heap-free fraction at decision time.
+- `jdk.ZOldGarbageCollection`: same limitation — outcome event, not trigger-decision event. No director rule fields.
+- `jdk.ZAllocationStall`: fires when an allocating thread had to stall waiting for memory — this is the **failure case** that ZGC's proactive director is supposed to prevent. `jdk.ZDirectorRule` is complementary: it shows the prevention-side decisions; `jdk.ZAllocationStall` shows when prevention failed. If `jdk.ZAllocationStall` events appear despite `jdk.ZDirectorRule` showing `timeUntilMinorOOM > 2s`, the rate model is under-predicting actual consumption.
+- `jdk.GarbageCollection` (base): records GC completion with cause, duration, and GC ID — no director rule fields, no non-triggering ticks.
 - `jdk.ZStatisticsCounter` and `jdk.ZStatisticsSampler`: **experimental** events (`experimental="true"` in `metadata.xml` — not enabled by default, not stable API). They expose internal ZGC metric counters/samplers by opaque enum ID, not structured director rule evaluations. They do not provide per-tick trigger reasoning or `timeUntilMinorOOM`.
-- No existing JFR event exposes ZGC director rule evaluation or non-triggering ticks.
+- No existing JFR event captures ZGC director rule evaluation or non-triggering ticks — the complete silence on idle or below-threshold ticks is the fundamental gap this event fills.
 
 #### External references
 
