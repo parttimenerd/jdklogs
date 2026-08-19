@@ -2,7 +2,7 @@
 
 **Status**: Working document — 14 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 62)
+**Last updated**: 2026-08-19 (pass 63)
 
 ---
 
@@ -43,10 +43,10 @@ Events sourced from sites inside `#ifndef PRODUCT` guards are **blocked** — th
 | 1 | jdk.NativeHeapTrim | **Propose with caveats** | High | `log_info(trimnative)` | Each native heap trim operation |
 | 2 | jdk.GCOverheadLimitExceeded | **Propose with caveats** | High | `log_info(gc)` | OOM throw: GC overhead limit exceeded |
 | 3 | jdk.ShenandoahMMU | **Propose with caveats** | High | `log_info(gc,ergo)` (primary); `log_debug(gc)` (periodic) | End of Shenandoah GC phase; ~200ms periodic |
-| 4 | jdk.ShenandoahCollectionDecision | **Redesign first** | High | `log_info(gc,ergo)` / `log_info(gc)` | Shenandoah GC cycle start |
+| 4 | jdk.ShenandoahCollectionDecision | **Propose with caveats** | High | `log_info(gc,ergo)` / `log_info(gc)` | Shenandoah GC cycle start |
 | 5 | jdk.ShenandoahReclaimProgress | **Propose with caveats** | Medium | `log_info(gc,ergo)` | End of degenerated or full Shenandoah GC |
 | 6 | jdk.ShenandoahTenuringThreshold | **Propose** | Medium | `log_info(gc,age)` | Each Shenandoah young collection planning phase |
-| 7 | jdk.ZGCTenuringThreshold | **Redesign first** | Medium | `log_info(gc,reloc)` | Each ZGC young collection relocation-set selection |
+| 7 | jdk.ZGCTenuringThreshold | **Propose with caveats** | Medium | `log_info(gc,reloc)` | `jdk.ZYoungGarbageCollection` field extension |
 | 8 | jdk.ZNMethodRegistration | **Propose with caveats** | Low | `log_info(gc,nmethod)` | End of each ZGC generation collection |
 | 9 | jdk.G1ConcurrentRefinementSweep | **Propose with caveats** | Medium | `log_debug(gc,refine)` | Each G1 refinement sweep completion |
 | 10 | jdk.G1ConcurrentRefinementPolicy | **Propose with caveats** | Medium | `log_debug(gc,refine)` | Each young GC pause end + periodic |
@@ -341,10 +341,10 @@ Oracle JDK 26 documentation on `GCOverheadLimit`:
 
 #### Open questions / upstream concerns
 
-1. **Recommendation: single combined event with nullable free-space fields.** G1 and Parallel have different free-space shapes (`freeSpacePercent` for G1; `freeSpaceYoungPercent` + `freeSpaceOldPercent` for Parallel). The nullable pattern is appropriate here: the `collector` field makes null semantics self-documenting, and there is only one event per JVM lifetime in most cases. Separate events (`jdk.G1GCOverheadLimitExceeded` + `jdk.ParallelGCOverheadLimitExceeded`) are cleaner but double the JFR metadata boilerplate for an event that fires at most once. The combined event with `collector="G1"` or `collector="Parallel"` is the recommended approach for the upstream submission.
+1. **Resolved: single combined event with nullable free-space fields.** G1 and Parallel have different free-space shapes (`freeSpacePercent` for G1; `freeSpaceYoungPercent` + `freeSpaceOldPercent` for Parallel). The nullable pattern is appropriate here: the `collector` field makes null semantics self-documenting, and there is only one event per JVM lifetime in most cases. Separate events (`jdk.G1GCOverheadLimitExceeded` + `jdk.ParallelGCOverheadLimitExceeded`) are cleaner but double the JFR metadata boilerplate for an event that fires at most once. The combined event with `collector="G1"` or `collector="Parallel"` is the chosen approach for the upstream submission.
 2. **Resolved**: `gcId` uses `GCId::peek() - 1` at the throw point. `GCId::peek()` returns `_next_id` (the id to be assigned to the NEXT GC), so `peek() - 1` is the last assigned GC id. If `peek() == 0` (no GC has run), the field is undefined. At `satisfy_failed_allocation()` the executing thread is the allocating application thread, so `GCId::current()` would assert (it is only valid on a GC thread); `peek()-1` is the correct mechanism. This is a well-established JFR pattern.
-3. **Recommendation: drop `consecutiveViolations`**. The counter always equals `GCOverheadLimitThreshold` at throw time — any other value is impossible since the throw only occurs when `_gc_overhead_counter >= GCOverheadLimitThreshold`. Furthermore `GCOverheadLimitThreshold = 5` is a `develop` flag and is not configurable in production builds. The field therefore carries exactly zero information at throw time: it is always 5. Keeping it risks misleading users into thinking it varies. The schema is adequately self-documenting without it: the event fires exactly once when the OOM is thrown, which already implies the threshold was reached. **Action for upstream submission**: remove the field from the proposed schema.
-4. **G1 field scoping**: `long_term_gc_time_ratio` and `free_space_percent` are locals inside `update_gc_overhead_counter()` and out of scope at the throw point (line 1109). Re-read them at the JFR emission site: `_policy->analytics()->long_term_gc_time_ratio()` and `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())`. Parallel GC does not have this issue — `_size_policy` is a class member accessible throughout `ParallelScavengeHeap`.
+3. **Resolved: drop `consecutiveViolations`**. The counter always equals `GCOverheadLimitThreshold` at throw time — any other value is impossible since the throw only occurs when `_gc_overhead_counter >= GCOverheadLimitThreshold`. Furthermore `GCOverheadLimitThreshold = 5` is a `develop` flag and is not configurable in production builds. The field therefore carries exactly zero information at throw time: it is always 5. Keeping it risks misleading users into thinking it varies. The schema is adequately self-documenting without it: the event fires exactly once when the OOM is thrown, which already implies the threshold was reached. Removed from the proposed schema.
+4. **Resolved: G1 field scoping**: `long_term_gc_time_ratio` and `free_space_percent` are locals inside `update_gc_overhead_counter()` and out of scope at the throw point (line 1109). Re-read them at the JFR emission site: `_policy->analytics()->long_term_gc_time_ratio()` and `percent_of(num_available_regions() * G1HeapRegion::GrainBytes, max_capacity())`. Parallel GC does not have this issue — `_size_policy` is a class member accessible throughout `ParallelScavengeHeap`.
 
 ---
 
@@ -482,7 +482,7 @@ For concurrent collectors like Shenandoah, traditional pause-time metrics underc
 
 1. **Resolved**: Drop the `isPeriodicSample=true` path from the initial proposal. `report()` at [`shenandoahMmuTracker.cpp:156`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L156) is `log_debug(gc)` — the periodic snapshot is debug-tier data. The initial proposal should cover only the end-of-cycle `update_utilization()` path (info-level). The `isPeriodicSample` field can be dropped from the initial event definition.
 2. **Resolved**: `gcId` from `_most_recent_gcid` is reliable. The `gcid` parameter is passed by each `record_*` caller at cycle end: `record_young(gcid)`, `record_global(gcid)`, `record_full(gcid)`, etc. — see [`shenandoahMmuTracker.cpp:112-153`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahMmuTracker.cpp#L112). The value is set to the ID of the collection that just completed, not a stale value from a prior cycle. Note: `record_old_marking_increment()` deliberately does NOT call `update_utilization()` — old-marking increments are rolled up into the next full-cycle report.
-3. Should the event merge with `jdk.ShenandoahCollectionDecision`? No: they fire at opposite ends of the GC cycle (start vs. end) and carry non-overlapping fields.
+3. **Resolved**: Should the event merge with `jdk.ShenandoahCollectionDecision`? No: they fire at opposite ends of the GC cycle (start vs. end), carry non-overlapping fields, and are on different threads. Merging is not technically feasible without a data-accumulation struct across the full GC lifetime.
 
 ---
 
@@ -490,7 +490,7 @@ For concurrent collectors like Shenandoah, traditional pause-time metrics underc
 
 #### Verdict
 
-**Redesign first.** The event spans three or more code sites, including one field group from a different thread (regulator thread). Upstream reviewers will ask for a single emission point. The trigger-detail fields (6 extra nullable fields from `log_trigger`) are best separated into a `jdk.ShenandoahGCTrigger` event. Propose the two events separately.
+**Propose with caveats.** The redesign path is resolved: propose `jdk.ShenandoahCollectionDecision` as a base-fields-only event from a single emission point (`service_concurrent_normal_cycle()`, control thread), then file `jdk.ShenandoahGCTrigger` as a separate follow-up carrying the trigger-specific nullable fields from `log_trigger()` (regulator thread). The split keeps each event on a single thread, avoids the nullable-field explosion of the combined design, and gives upstream a tractable first PR. Drop `decision` from the initial submission (always `"normal"` at the sole emission point — carries zero information). The base-fields event (`generation`, `cause`, `available`, `softMaxCapacity`) is clean and ready to file.
 
 #### The question it answers
 
@@ -628,9 +628,9 @@ The three young-gen trigger types (`rate_average`, `rate_momentary`, `rate_accel
 
 #### Open questions / upstream concerns
 
-1. **Multi-site emission**: This event spans `service_concurrent_normal_cycle()` (control thread), `log_trigger()` (regulator thread), and `prepare_for_old_collections()` (old heuristics). Upstream will ask for a single emission point. The standard approach is to accumulate fields into a struct that is populated across the call chain and emitted at the control thread site. This is implementable but requires design work.
-2. **Trigger field separation**: The 6+ nullable adaptive trigger fields are a natural candidate for a separate `jdk.ShenandoahGCTrigger` event. Separating them makes each event simpler and avoids the sparse-field problem. **Concrete proposal for the split**: `jdk.ShenandoahCollectionDecision` carries `startTime`, `gcId`, `generation`, `cause`, `available` (always-present base fields). `jdk.ShenandoahGCTrigger` is emitted from `log_trigger()` in `ShenandoahHeuristics` and carries: `gcId` (join key), `triggerType` (string enum), and the type-specific nullable fields (`anticipatedGcDurationMs`, `baselineConsumptionBytes`, `fragmentationDensityPct`, `fragmentedFreeBytes`, `liveAtPrevMarkBytes`, `currentUsageBytes`, `marginOfError`). The `jdk.ShenandoahGCTrigger` event fires from the regulator thread (at heuristic evaluation time); `jdk.ShenandoahCollectionDecision` fires from the control thread (at cycle start). They share `gcId` as the join key. The split avoids the multi-thread emission problem by keeping each event on a single thread. For the initial upstream submission, propose `jdk.ShenandoahCollectionDecision` alone (base fields); file `jdk.ShenandoahGCTrigger` as a follow-up once the base event is accepted.
-3. **Recommendation for `decision` field**: restrict the initial proposal to `service_concurrent_normal_cycle()` and drop the `decision` field from the first submission (it would always be `"normal"` anyway). The `generation` field already distinguishes young/old/global within the normal cycle path. Add a `GCMode` enum field as a follow-up once the full multi-site emission design (OQ1) is resolved. This avoids proposing a field that carries no information in its initial form while still exposing the diagnostic value of `generation`, `cause`, and `available`.
+1. **Resolved: accumulate via struct for multi-site fields.** This event spans `service_concurrent_normal_cycle()` (control thread), `log_trigger()` (regulator thread), and `prepare_for_old_collections()` (old heuristics). The standard HotSpot approach is a thread-local or GC-cycle-scoped struct populated across the call chain and emitted at the control thread site. However, the initial proposal avoids this complexity by splitting the event (see OQ2).
+2. **Resolved: split into base event + separate trigger event.** `jdk.ShenandoahCollectionDecision` carries `startTime`, `gcId`, `generation`, `cause`, `available`, `softMaxCapacity` (always-present base fields, single emission point in control thread). `jdk.ShenandoahGCTrigger` is a separate proposed event emitted from `log_trigger()` in `ShenandoahHeuristics` and carries: `gcId` (join key), `triggerType`, and the type-specific nullable fields. The split avoids the multi-thread emission problem by keeping each event on a single thread. For the initial upstream submission, propose `jdk.ShenandoahCollectionDecision` alone (base fields); file `jdk.ShenandoahGCTrigger` as a follow-up once the base event is accepted.
+3. **Resolved: drop `decision` field from initial proposal.** At the sole emission point (`service_concurrent_normal_cycle()`), `decision` is always `"normal"` — carrying zero information. The `generation` field already distinguishes young/old/global within the normal cycle path. Drop from the initial proposal; re-add as a `gcMode` enum field in the follow-up once multi-site emission (OQ1) is implemented.
 
 ---
 
@@ -897,7 +897,7 @@ The Shenandoah algorithm uses mortality-rate analysis (`compute_tenuring_thresho
 
 #### Open questions / upstream concerns
 
-1. Should algorithm input fields (mortality rate, dark matter fraction) be included? Currently excluded because they are exposed only at `log_debug` level. Could be added in a follow-up that promotes those fields to `log_info`.
+1. **Resolved**: Should algorithm input fields (mortality rate, dark matter fraction) be included? No — they are exposed only at `log_debug(gc,age)` level. The initial proposal includes only the `log_info`-level output (`new_threshold`, `min`, `max`). Intermediate algorithm values (`mortalityRate` per cohort, `darkMatterFraction`) can be added in a follow-up that promotes those fields to `log_info` — that is a separate log-level promotion PR and should not block the initial event submission.
 2. **Resolved**: `gcId` is the right correlation key. `GCIdMark gc_id_mark` is set in `service_concurrent_normal_cycle()` at [`shenandoahGenerationalControlThread.cpp:248`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahGenerationalControlThread.cpp#L248), before `prepare_regions_and_collection_set()` is called. `GCId::current()` returns the current young collection's ID at `update_tenuring_threshold()` time — the same ID as the `jdk.GarbageCollection` and `jdk.ShenandoahCollectionDecision` events for the same cycle.
 
 ---
@@ -906,9 +906,7 @@ The Shenandoah algorithm uses mortality-rate analysis (`compute_tenuring_thresho
 
 #### Verdict
 
-**Redesign first.** `jdk.ZYoungGarbageCollection` already has a `tenuringThreshold` field (set to `ZGeneration::young()->tenuring_threshold()` in `zTracer.cpp:104`). The standalone event as designed is therefore partially redundant. The unique value this proposal adds is the `reason` field (`"Promote All"` / `"ZTenuringThreshold"` / `"Computed"`) — the existing event cannot distinguish these three selection paths. **The right upstream approach is to propose adding `reason` as a new field to `jdk.ZYoungGarbageCollection` rather than creating a new standalone event.** This is a smaller diff, avoids duplicating the threshold value, and will receive less friction.
-
-If the standalone event is proposed anyway (e.g., to capture timing relative to `select_relocation_set()` rather than at collection end), the redundancy with `jdk.ZYoungGarbageCollection.tenuringThreshold` must be explicitly addressed in the RFE.
+**Propose with caveats.** The standalone event design is redundant with `jdk.ZYoungGarbageCollection.tenuringThreshold`. The upstream approach is a field extension: add `tenuringThresholdReason` (string: `"Promote All"` / `"ZTenuringThreshold"` / `"Computed"`) to the existing `jdk.ZYoungGarbageCollection` event. This is a one-file diff in `zTracer.cpp`, avoids duplicating the threshold value, and will receive less friction than a new event. The value `reason` exposes cannot be derived from any existing field in any existing event — it is the unique contribution. File as a standalone PR: "Add tenuringThresholdReason field to jdk.ZYoungGarbageCollection." If the upstream review requires a separate event (e.g., for timing granularity at `select_relocation_set()` vs. collection end), the existing standalone design below is the fallback.
 
 #### The question it answers
 
@@ -1036,8 +1034,8 @@ Different algorithms (mortality rate analysis vs. life decay factor), different 
 
 #### Open questions / upstream concerns
 
-1. **Resolved: prefer field extension to `jdk.ZYoungGarbageCollection`**. Add `tenuringThresholdReason` (string: `"Promote All"` / `"ZTenuringThreshold"` / `"Computed"`) as a new field in `jdk.ZYoungGarbageCollection`. This is the smaller change: it avoids duplicating `tenuringThreshold`, keeps the reason co-located with the threshold value, and is a single-file diff in `zTracer.cpp`. File as a standalone PR against `jdk.ZYoungGarbageCollection` with justification: "Without a reason field, a threshold of 1 is ambiguous — it could mean allocation pressure drove the dynamic algorithm to 1, or that `-XX:ZTenuringThreshold` is set, or that Promote All was forced." The standalone `jdk.ZGCTenuringThreshold` event should only be proposed if timing granularity (selection phase vs. collection end) is a distinct requirement.
-2. Should `reason="Computed"` be supplemented with the 3 intermediate values (`lifeDecayFactor`, `youngLogResidency`, `allocatedGarbageRatio`)? Currently excluded because they are at `log_debug` level. Could be added in a follow-up.
+1. **Resolved: prefer field extension to `jdk.ZYoungGarbageCollection`**. Add `tenuringThresholdReason` (string: `"Promote All"` / `"ZTenuringThreshold"` / `"Computed"`) as a new field in `jdk.ZYoungGarbageCollection`. This is the smaller change: it avoids duplicating `tenuringThreshold`, keeps the reason co-located with the threshold value, and is a single-file diff in `zTracer.cpp`. File as a standalone PR against `jdk.ZYoungGarbageCollection` with justification: "Without a reason field, a threshold of 1 is ambiguous — it could mean allocation pressure drove the dynamic algorithm to 1, or that `-XX:ZTenuringThreshold` is set, or that Promote All was forced." The standalone `jdk.ZGCTenuringThreshold` event (documented below) serves as the fallback design if timing granularity at `select_relocation_set()` is required by upstream reviewers.
+2. **Resolved**: Should `reason="Computed"` be supplemented with the 3 intermediate values (`lifeDecayFactor`, `youngLogResidency`, `allocatedGarbageRatio`)? No — these are at `log_debug` level and belong in a follow-up log-level promotion PR. Excluded from the initial submission.
 3. **Resolved**: `gcId` is reliable at `select_tenuring_threshold()` call time. The `GCIdMark _gc_id` field is initialized in `ZDriverScopeMinor` at [`zDriver.cpp:169`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDriver.cpp#L169), which is constructed before `ZGenerationYoung::collect()` is called. The mark is in scope for the entire minor collection including the concurrent select phase — `GCId::current()` is valid and returns the current young collection's ID.
 
 ---
