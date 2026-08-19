@@ -1,8 +1,8 @@
 # JFR Event Proposals: Source-Level Evidence Dossier
 
-**Status**: Working document — 14 active proposals, 2 removed/blocked  
+**Status**: Working document — 16 active proposals, 2 removed/blocked  
 **Audience**: OpenJDK developers; every claim is traceable to a source file, line, and log site  
-**Last updated**: 2026-08-19 (pass 74)
+**Last updated**: 2026-08-19 (pass 75)
 
 ---
 
@@ -54,6 +54,8 @@ Events sourced from sites inside `#ifndef PRODUCT` guards are **blocked** — th
 | 12 | jdk.G1HeapResize | **Propose with caveats** | Medium | `log_debug(gc,ergo,heap)` | Each young GC pause end | **Medium** — `young_collection_resize_amount()` has all fields in scope; must emit only when `resizeBytes != 0`; shrink-path fields require null handling; also requires log-level promotion; ~50 lines |
 | 13 | jdk.ZDirectorRule | **Propose with caveats** | Medium | `log_debug(gc,director)` | Each ZGC director tick (~1s) | **Medium** — initial submission: 3 fields from `start_gc()` only (`heapFreePercent`, `triggeredMinorRule`, `triggeredMajorRule`), zero struct changes; `timeUntilMinorOOM`/`minorFreeBytes` deferred to follow-up PR; ~35 lines |
 | 14 | jdk.PSAdaptiveSizePolicy | **Propose with caveats** | Medium | `log_debug(gc,ergo)` | Each Parallel GC young collection | **Medium** — all fields accessible as policy accessor methods at `resize_after_young_gc()` end; `edenSizingBranch` requires replacing the raw boolean in `compute_desired_eden_size()` with a string-valued output; also requires log-level promotion; ~50 lines |
+| 15 | jdk.ShenandoahOldEvacuation | **Propose** | High | `log_info(gc)` / `log_info(gc,ergo)` | Each Shenandoah old-gen mixed evacuation planning and outcome | **Easy** — all fields are locals or instance fields already printed by existing `log_info` calls across three functions; no struct changes; ~50 lines total across 3 emission sites |
+| 16 | jdk.ShenandoahAdaptiveCSetSelection | **Propose** | Medium | `log_info(gc,ergo)` | Each Shenandoah young collection CSet sizing decision | **Easy** — single emission site in `choose_collection_set_from_regiondata()`; all four fields are locals at that point; ~15 lines |
 
 ---
 
@@ -1967,6 +1969,206 @@ These Oracle descriptions map directly to the event fields: `throughput` (mutato
 
 ---
 
+### 15. jdk.ShenandoahOldEvacuation
+
+#### Verdict
+
+**Propose.** All emission points are `log_info(gc)` or `log_info(gc,ergo)` — production-visible without any log-level promotion. All fields are locals or instance fields already in scope at the existing log call sites. No struct changes, no nullable fields, no prerequisite patches. Three emission sites cover the complete life cycle of an old-gen mixed-evacuation planning pass: preparation (garbage survey), evacuation selection (finalization + budget management), and threshold auto-tuning.
+
+#### The question it answers
+
+"What did Shenandoah's old-gen mixed evacuation actually select, how much garbage is available to reclaim, and why was the evacuation budget adjusted?"
+
+Shenandoah generational mode (JEP 521) drives old-gen reclamation through mixed-evacuation cycles interleaved with young collections. The operator currently sees only the per-region state transitions in `jdk.ShenandoahHeapRegionStateChange` and overall collection counts in `jdk.GarbageCollection` — there is no JFR event that tells you:
+
+- How many old-gen regions were included in the mixed evacuation and how many bytes were evacuated vs. reclaimed
+- Whether any regions were excluded because all candidates were pinned
+- How much collectable garbage and immediate garbage exists in old gen at planning time
+- Whether the old garbage threshold was auto-adjusted because the old gen grew relative to the heap
+- Whether the young-generation surplus budget was used to top up the old-gen evacuation budget
+
+Without this event, diagnosing why old-gen occupancy is not declining requires enabling `log_debug(gc)` and grepping for old-heuristic output — a production-hostile operation.
+
+#### Emission points
+
+Three functions in [`shenandoahOldHeuristics.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp):
+
+**Site 1 — `prepare_for_old_collections()` (lines ~567–572)**: fires once per old-gen marking completion, when the garbage survey is complete. Reports the total collectable garbage, immediate garbage, and defragmentation region counts. This is the "how much can we collect?" snapshot.
+
+```
+log_info(gc,ergo)("Old-Gen Collectable Garbage: " PROPERFMT " consolidated with free: " PROPERFMT ", over %zu regions",
+    PROPERFMTARGS(collectable_garbage), PROPERFMTARGS(unfragmented), old_candidates)
+log_info(gc,ergo)("Old-Gen Immediate Garbage: " PROPERFMT " over %zu regions",
+    PROPERFMTARGS(immediate_garbage), immediate_regions)
+log_info(gc,ergo)("Old regions selected for defragmentation: %zu", defrag_count)
+log_info(gc,ergo)("Old regions not selected: %zu", total_uncollected_old_regions)
+```
+
+**Site 2 — `finalize_mixed_evacs()` (lines ~324–347)**: fires once per mixed-evacuation cycle, reporting the outcome of old-gen region selection. Three mutually exclusive branches:
+- Normal path: `"Old-gen mixed evac (%zu regions, evacuating %s, reclaiming: %s)"`
+- All-pinned path: `"All candidate regions %u are pinned"`
+- No-budget path: `"No regions selected for mixed collection. Old evacuation budget: %s, Next candidate: %u, Last candidate: %u"`
+
+**Site 3 — `top_off_collection_set()` (line ~385)**: fires when unexpended young-generation reserve is converted into additional old-gen evacuation budget. Fires only when the young GC reclaimed more than expected, leaving surplus capacity.
+
+```
+log_info(gc)("Augmenting old-gen evacuation budget from unexpended young-generation reserve by %zu regions",
+    regions_for_old_expansion)
+```
+
+**Site 4 — `adjust_old_garbage_threshold()` (lines ~847–848)**: fires when `_old_garbage_threshold` is automatically adjusted because old-gen used regions exceed a fraction of the total heap. This is the self-tuning threshold that determines which old regions are worth evacuating.
+
+```
+log_info(gc)("Adjusting old garbage threshold to %lu because Old Generation used regions represents %lu%% of heap",
+    _old_garbage_threshold, percent_used)
+```
+
+**Cadence**: Site 1 fires once per old-gen marking cycle completion. Sites 2 and 3 fire once per mixed-evacuation cycle (interleaved with young collections). Site 4 fires only when the threshold changes — infrequent.
+
+**Thread**: GC control thread (`ShenandoahGenerationalControlThread`).
+
+#### Implementation design
+
+The three phases are distinct enough to warrant a single event with a `phase` discriminator field rather than three separate events. All sites are `log_info` already — no log-level promotion needed. The event is emitted alongside each existing log call; nullable fields are set to 0/null when not applicable to the current phase.
+
+Alternatively, emit three separate events: `ShenandoahOldGarbageSurvey` (Site 1), `ShenandoahOldEvacuationOutcome` (Site 2/3), `ShenandoahOldThresholdAdjustment` (Site 4). The single-event approach is simpler for initial submission; split can be a follow-up if reviewers prefer fine-grained types.
+
+#### Fields
+
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Timestamp of this planning or outcome event. Join multiple events on a time window to correlate preparation with outcome across the same old-gen cycle. |
+| `phase` | String discriminator: `"preparation"` (Site 1), `"evacuation_outcome"` (Site 2/3), `"budget_topup"` (Site 3 only), `"threshold_adjusted"` (Site 4) | No | Identifies which phase produced this event; use as a filter key when querying. `"evacuation_outcome"` events carry the per-cycle reclaim result; `"preparation"` events carry the garbage survey. |
+| `collectableGarbageBytes` | `collectable_garbage` — total bytes in regions eligible for collection (garbage > threshold), from `prepare_for_old_collections()` | Yes — null on non-preparation phases | The total reclamation potential available to the old-gen collector at survey time. If this is declining across successive `"preparation"` events, old-gen garbage is not accumulating fast enough to justify continued mixed evacuations — normal at the end of an old-gen cycle. If it is flat or growing while old-gen occupancy also grows, the old garbage threshold (`_old_garbage_threshold`, shown in `oldGarbageThreshold`) may be too high, excluding too many marginally-garbage regions. |
+| `collectableGarbageRegions` | `old_candidates` — number of regions with enough garbage to be worth collecting | Yes — null on non-preparation phases | **Region count vs. byte count**: `collectableGarbageBytes / collectableGarbageRegions` gives average bytes of garbage per collectable region. If this ratio is low while `collectableGarbageRegions` is large, garbage is spread thinly across many regions — a fragmentation symptom. Cross-reference with `jdk.ShenandoahCollectionDecision triggerType=fragmentation` to confirm. |
+| `immediateGarbageBytes` | `immediate_garbage` — bytes in fully-dead regions (100% garbage, reclaimed immediately without evacuation) | Yes — null on non-preparation phases | Fully-dead regions are reclaimed free — no evacuation cost. High `immediateGarbageBytes` relative to `collectableGarbageBytes` means a large fraction of old-gen reclamation is "free" (just region reclaim, no copying). If `immediateGarbageBytes` is consistently 0, old gen has no fully-dead regions — objects are surviving but sparsely filling regions, which is the fragmentation case. |
+| `immediateGarbageRegions` | `immediate_regions` — count of fully-dead regions | Yes — null on non-preparation phases | If this is 0 while `collectableGarbageRegions` is large, all collectable regions require evacuation (copying) — higher per-cycle CPU cost. A ratio of `immediateGarbageRegions / (immediateGarbageRegions + collectableGarbageRegions)` gives the "free reclaim fraction." |
+| `defragRegions` | `defrag_count` — regions selected for defragmentation (live but sparse, included to compact the heap) | Yes — null on non-preparation phases | Non-zero means some regions are being compacted even though they are below the `_old_garbage_threshold` — the collector is spending evacuation budget to improve region density. If `defragRegions` is growing while `collectableGarbageRegions` is shrinking, the old gen has shifted from garbage-dominated to fragmentation-dominated — a signal to lower `ShenandoahOldGarbageThreshold`. |
+| `unselectedRegions` | `total_uncollected_old_regions` — regions not selected for any collection category | Yes — null on non-preparation phases | These regions have live data but not enough garbage to meet the threshold and were not chosen for defragmentation. High `unselectedRegions` relative to `collectableGarbageRegions` means most of old gen is out of reach for mixed evacuation under the current threshold. |
+| `includedRegions` | `_included_old_regions` — regions actually included in this mixed evacuation cycle | Yes — null on non-outcome phases | How many old-gen regions are being evacuated this cycle. Divide by `collectableGarbageRegions` (from the preparation event) to compute the fraction of available work done per cycle. If `includedRegions` is consistently at the minimum (1), the evacuation budget per cycle is very small — either `MaxGCPauseMillis` is tight or the old-gen regions are large and expensive to evacuate. |
+| `evacuatedBytes` | `_evacuated_old_bytes` — bytes to be evacuated (live bytes copied out of selected regions) | Yes — null on non-outcome phases | Evacuation cost indicator: higher `evacuatedBytes` = more live data copied = longer GC pause. If `evacuatedBytes >> reclaimedBytes`, the selected regions are mostly live (low garbage density) — the threshold may be too low, selecting regions that are expensive to evacuate relative to the bytes reclaimed. |
+| `reclaimedBytes` | `_collected_old_bytes` — bytes reclaimed from selected regions (garbage + freed space after evacuation) | Yes — null on non-outcome phases | Net reclaim per mixed cycle. Compare against `collectableGarbageBytes` (from preparation) to derive how many cycles are needed to clear the current backlog: `collectableGarbageBytes / reclaimedBytes` gives approximate remaining cycles. If `reclaimedBytes` is growing, reclaim rate is increasing (more regions selected or denser garbage per region). |
+| `outcome` | String: `"evacuated"` (normal path, `includedRegions > 0`), `"all_pinned"` (no regions selectable — all candidates are pinned by concurrent operations), `"no_budget"` (evacuation reserve exhausted before any region selected) | Yes — null on non-outcome phases | **Failure mode detector**: `"all_pinned"` repeatedly means Shenandoah cannot make old-gen progress because regions are being held pinned by concurrent access (e.g., large object in JNI critical section or concurrent lock). If this fires on consecutive mixed cycles, old-gen occupancy will grow unchecked until a degenerated or full GC is forced. `"no_budget"` means the per-cycle evacuation budget (`_old_evacuation_reserve`) was fully consumed — this is normal if many regions are selected; it becomes a problem if it fires while `includedRegions` is very low (budget too small for even a single region). |
+| `evacuationBudgetBytes` | `_old_evacuation_reserve` — old-gen evacuation reserve at the time `finalize_mixed_evacs()` runs | Yes — null on non-outcome phases | The per-cycle budget cap. If `"no_budget"` fires and `evacuationBudgetBytes` is small, the budget is the bottleneck — caused by tight `MaxGCPauseMillis` leaving little headroom for old-gen work alongside young GC. Cross-reference with `MaxGCPauseMillis` and young GC duration from `jdk.GarbageCollection`. |
+| `budgetTopupRegions` | `regions_for_old_expansion` — additional regions added from unexpended young-gen reserve | Yes — null unless `phase="budget_topup"` | Non-zero means the young GC reclaimed more than budgeted and donated the surplus to old-gen evacuation. Persistent non-zero values indicate the young-gen budget is consistently over-estimated (young GC is faster than expected) — the system is self-correcting, but if `budgetTopupRegions` is the primary source of old-gen evacuation capacity, the old-gen evacuation reserve itself may be too small. |
+| `oldGarbageThreshold` | `_old_garbage_threshold` — current threshold for considering a region worth evacuating (percent garbage) | Yes — null unless `phase="threshold_adjusted"` | The threshold that was just set. A lower threshold means more regions are eligible for collection (more granular reclaim, more CPU cost). **Tuning trigger**: if `jdk.ShenandoahCollectionDecision triggerType=expansion_failure` fires alongside `phase="threshold_adjusted"` events, the automatic threshold reduction is failing to prevent old-gen from filling — investigate whether the reclaim rate from mixed evacuations is keeping up with allocation. |
+| `heapOccupancyPct` | `percent_used` — old-gen used regions as percent of total heap, at threshold adjustment time | Yes — null unless `phase="threshold_adjusted"` | Why the threshold was adjusted. High `heapOccupancyPct` (e.g., > 50%) triggers an automatic threshold reduction to accept more regions for collection. Tracking this field across threshold-adjustment events shows the occupancy at which the self-tuning kicks in — useful for understanding whether `-XX:ShenandoahOldGarbageThreshold` (the base threshold) is calibrated correctly for this workload. |
+
+#### What it is used for
+
+Shenandoah generational mode's old-gen reclamation is invisible in JFR today: `jdk.GarbageCollection` records that a mixed collection happened but not whether it selected any old-gen regions, reclaimed any bytes, or why it may have failed. `jdk.ShenandoahHeapRegionStateChange` shows region transitions but not the planning decisions behind them.
+
+This event makes the full old-gen evacuation lifecycle observable:
+
+**Reclaim rate tracking**: divide `reclaimedBytes` by elapsed time between consecutive `"evacuation_outcome"` events to get old-gen reclaim rate in bytes/s. Compare against the old-gen allocation/promotion rate (derivable from `jdk.ShenandoahPromotionInformation`). If reclaim rate < promotion rate, old-gen occupancy will grow monotonically and a degenerated or full GC is inevitable. The gap between these rates is the earliest warning of impending OOM.
+
+**Mixed-evacuation stall diagnosis**: `outcome="all_pinned"` on consecutive events = old-gen progress is blocked by region pinning. Correlate with application thread JFR events (JNI critical sections, object lock hold times) to identify the pinning source. `outcome="no_budget"` = budget too small; cross-reference `evacuationBudgetBytes` with `MaxGCPauseMillis` configuration.
+
+**Garbage survey interpretation**: `collectableGarbageBytes` at preparation time sets the expected number of mixed-evacuation cycles needed to clear the backlog (= `collectableGarbageBytes / reclaimedBytes` per cycle). If this ratio exceeds the actual number of mixed cycles observed before the next old-gen marking, old gen is not being fully cleaned between markings — either cycles are running too rarely (check `jdk.ShenandoahCollectionDecision`), selecting too few regions per cycle (`includedRegions` is low), or `outcome="all_pinned"/"no_budget"` is interrupting progress.
+
+**Threshold auto-tuning visibility**: `phase="threshold_adjusted"` events show when and why `_old_garbage_threshold` changed. If this fires frequently, the workload's old-gen density is volatile — the self-tuning is compensating for a mismatch between the static `-XX:ShenandoahOldGarbageThreshold` flag and the actual workload. Consider setting a manual threshold that matches the typical survey-time garbage density (use `collectableGarbageBytes / (collectableGarbageBytes + immediateGarbageBytes) / collectableGarbageRegions` as a guide).
+
+**Defragmentation cost**: `defragRegions > 0` means the collector is compacting regions below the garbage threshold. If `defragRegions` consistently exceeds `collectableGarbageRegions`, the mixed evacuations are spending more effort on compaction than on garbage collection — the heap has a structural fragmentation problem. Increasing `-Xmx` or reducing `-XX:ShenandoahMinFreeThreshold` to give old gen more headroom may reduce compaction pressure.
+
+**Cross-event correlation**: join on `gcId` with `jdk.GarbageCollection` to map each `"evacuation_outcome"` event to its mixed-GC pause duration — `reclaimedBytes / duration` gives reclaim throughput in bytes per millisecond of pause. Join `"preparation"` events with subsequent `"evacuation_outcome"` events on a time window to compute `collectableGarbageBytes / reclaimedBytes` (remaining-cycles estimate). Join with `jdk.ShenandoahCollectionDecision triggerType` on the same GC cycle: if `triggerType=growth` fires alongside `outcome="all_pinned"` or `outcome="no_budget"`, old gen triggered a new cycle before the previous backlog was cleared — a strong indicator that evacuation cycles are not keeping up with promotion rate.
+
+#### Why existing events don't cover this
+
+- `jdk.GarbageCollection`: records GC type and duration, but `cause` for a Shenandoah mixed collection does not distinguish old-gen region selection success from failure. No fields for `_included_old_regions`, `_evacuated_old_bytes`, `_collected_old_bytes`, or `outcome`.
+- `jdk.ShenandoahHeapRegionStateChange`: records per-region state transitions (`Free`, `Humongous`, `Pinned`, etc.) but not the aggregate evacuation plan or budget. Cannot reconstruct which regions were selected, why some were excluded, or whether the outcome was `"all_pinned"`.
+- `jdk.ShenandoahReclaimProgress` (proposal #5): covers the degenerated/full GC early-exit condition in `ShenandoahMetrics::is_good_progress()` — fires at the end of a degraded cycle to report whether it made useful progress. It does not cover normal mixed-evacuation planning or outcome.
+- `jdk.ShenandoahCollectionDecision` (proposal #4): covers the decision to *start* a GC cycle and the trigger type. It does not cover what happened during old-gen region selection once the cycle was underway.
+- No existing JFR event exposes `_old_evacuation_reserve`, `_included_old_regions`, `_evacuated_old_bytes`, `_collected_old_bytes`, `collectable_garbage`, `immediate_garbage`, `defrag_count`, `_old_garbage_threshold`, or the `outcome` discriminator from `finalize_mixed_evacs()`.
+
+#### External references
+
+[JEP 521: Generational Shenandoah](https://openjdk.org/jeps/521) — describes the mixed-evacuation model:
+
+> "The generational mode ... performs mixed collections, interleaving the evacuation of old-generation regions with young-generation collections. The number of old-generation regions evacuated per mixed collection is bounded by the available evacuation budget."
+
+[JDK-8314599](https://bugs.openjdk.org/browse/JDK-8314599) — "GenShen: Couple adaptive tenuring": introduced the old-gen heuristics infrastructure that `ShenandoahOldHeuristics` builds on, including `_old_evacuation_reserve` management and the `finalize_mixed_evacs()` function.
+
+#### Open questions / upstream concerns
+
+1. **Single event vs. three events**: the three phases (`prepare_for_old_collections`, `finalize_mixed_evacs`, `adjust_old_garbage_threshold`) have different cardinalities — Site 1 fires once per old-gen marking cycle; Site 2/3 fire once per mixed evacuation cycle (more frequent). A single event type with a `phase` field conflates two different granularities. Upstream reviewers may prefer separate events `jdk.ShenandoahOldGarbageSurvey`, `jdk.ShenandoahOldEvacuationOutcome`, `jdk.ShenandoahOldThresholdAdjust`. **Recommendation**: file as three separate events with a short explanation of the cadence difference. This avoids the nullable-field pattern and makes each event independently queryable.
+2. **`prime_collection_set()` line ~90**: the log line `"Remaining %u old regions are being coalesced and filled"` fires from a different function and describes a different operation — coalescing leftover old-region candidates that weren't evacuated into free regions. This is related but distinct from the evacuation outcome. **Recommendation**: include as a fourth phase `"coalesce"` with a single `remainingRegions` field, or drop from the initial submission and add in a follow-up. The coalescing operation is an implementation detail that is less diagnostically critical than the evacuation outcome.
+
+---
+
+### 16. jdk.ShenandoahAdaptiveCSetSelection
+
+#### Verdict
+
+**Propose.** Log level is `log_info(gc,ergo)` — production-visible, correct tier, no log-level promotion needed. Single emission site. Four fields, all locals in scope at the existing log call. No prerequisites. Clean proposal.
+
+#### The question it answers
+
+"How did Shenandoah size the young-generation collection set for this cycle — what free-space target was used, what was actually available, and what were the evacuation capacity and garbage eligibility bounds?"
+
+Shenandoah's adaptive CSet selection in `choose_collection_set_from_regiondata()` determines which young regions are included in each young collection by balancing four constraints: the target free headroom to maintain after GC, the actual available free space, the maximum evacuation capacity (how many bytes the GC can safely copy), and the minimum garbage per region (the threshold below which a region is not worth evacuating). Without this event, an operator cannot tell whether a young collection is undersized because the free target is too high, the evacuation capacity is too small, or the garbage threshold is excluding too many regions.
+
+#### Emission point
+
+**Function**: `ShenandoahAdaptiveHeuristics::choose_collection_set_from_regiondata()`  
+**File**: [`shenandoahAdaptiveHeuristics.cpp:124–125`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp#L124)  
+**Log tag**: `log_info(gc,ergo)` — production-visible.
+
+**Exact log message**:
+```
+log_info(gc,ergo)("Adaptive CSet Selection. Target Free: " PROPERFMT ", Actual Free: " PROPERFMT
+                  ", Max Evacuation: " PROPERFMT ", Min Garbage: " PROPERFMT,
+    PROPERFMTARGS(free_target), PROPERFMTARGS(actual_free),
+    PROPERFMTARGS(max_cset), PROPERFMTARGS(min_garbage))
+```
+
+**Cadence**: Once per young collection planning phase. Fires at every young GC cycle, just before region selection begins.
+
+**Thread**: Shenandoah heuristics / control thread.
+
+#### Fields
+
+| Field | Source | Nullable? | Tuning use |
+|---|---|---|---|
+| `startTime` | Standard JFR | No | Timestamp of this young collection CSet sizing decision. Join with `jdk.GarbageCollection` on `gcId` to correlate the sizing inputs with the resulting pause duration. |
+| `freeTargetBytes` | `free_target` — the minimum free space Shenandoah aims to maintain after this collection (computed from `ShenandoahMinFreeThreshold` and the current heap size) | No | The free-space floor that drives collection aggressiveness. If `freeTargetBytes > actualFreeBytes`, the heap is below the minimum free threshold before the GC starts — Shenandoah is already in deficit and the collection was triggered by free-space pressure. **Action**: if this is consistently true, increase `-Xmx` or lower `ShenandoahMinFreeThreshold` (default 10%); the former is safer. |
+| `actualFreeBytes` | `actual_free` — current free space in the heap at the time of CSet selection | No | **Immediate headroom**: how much space is actually available. `actualFreeBytes - freeTargetBytes` gives the "surplus above target" — the headroom the collection has to work with. Near-zero surplus means the collection is mandatory (triggered by free-space floor); large surplus means it was triggered by allocation rate prediction rather than free-space pressure. Cross-reference with `jdk.ShenandoahCollectionDecision.triggerType`: `triggerType=rate_average` with large `actualFreeBytes - freeTargetBytes` = allocation-rate-driven trigger, not space-pressure. |
+| `maxEvacuationBytes` | `max_cset` — maximum bytes the GC can evacuate in this cycle (bounded by available free space minus the free target) | No | The hard cap on evacuation work this cycle. If `maxEvacuationBytes` is small relative to the live young set, not all young regions can be evacuated — some will be skipped. This creates a "young region debt" that accumulates in old gen via promotion. **Action**: if `maxEvacuationBytes` is consistently much smaller than `collectableGarbageBytes` from `jdk.ShenandoahOldEvacuation` preparation events, the heap is too full to run young collections effectively — heap expansion or a reduction in live set is needed. |
+| `minGarbageBytes` | `min_garbage` — minimum garbage bytes a region must contain to be selected for collection (regions below this threshold are not worth evacuating) | No | The per-region eligibility floor. If `minGarbageBytes` is high, only very garbage-dense regions are selected — the young collection is efficient but selective. If `minGarbageBytes` is low, the collector is evacuating regions with mostly-live data (expensive). Track this across consecutive events: if it is declining, the heap has fewer garbage-dense regions and collection efficiency is decreasing. **Action**: if `minGarbageBytes` is near zero while `maxEvacuationBytes` is small, the collection is limited by evacuation capacity, not garbage availability — heap is too full. |
+
+#### What it is used for
+
+The four fields in this event directly correspond to the four inputs that determine which young regions are included in each collection. Together they answer: is the collection limited by free space (`actualFreeBytes < freeTargetBytes`), by evacuation capacity (`maxEvacuationBytes` small), by garbage eligibility (`minGarbageBytes` high), or is it running freely with full selection?
+
+**Free-space deficit diagnosis**: `actualFreeBytes < freeTargetBytes` before the collection starts means the heap entered the GC cycle already below the minimum-free floor. The `"Trigger (Young): Free (%s) is below minimum threshold (%s)"` log line (from `should_start_gc()`) may precede this event — but only with `-Xlog:gc,ergo*=info`. This JFR event provides the deficit measurement in production.
+
+**Evacuation-capacity trend**: tracking `maxEvacuationBytes` across consecutive events shows whether the available evacuation headroom is shrinking (heap filling) or stable. A declining trend across 5+ events predicts eventual free-space exhaustion.
+
+**CSet selectivity**: `minGarbageBytes` determines how aggressively regions are included. If this is growing, the collection is becoming more selective — consistent with a healthy heap where most young regions have enough garbage to justify evacuation. If it is declining toward zero, the collector is accepting increasingly marginal regions — a sign of allocation pressure exceeding garbage production.
+
+**Cross-event correlation**: join on `gcId` with `jdk.GarbageCollection` to correlate these sizing inputs with the resulting young GC pause duration — `maxEvacuationBytes / duration` approximates the evacuation throughput for this cycle. Join with `jdk.ShenandoahCollectionDecision` on the same `gcId` to see what triggered this cycle: the trigger type determines whether `actualFreeBytes < freeTargetBytes` was the cause of the collection or just the current state at collection time. Join with `jdk.ShenandoahOldEvacuation "evacuation_outcome"` events by time window: if the young collection's `maxEvacuationBytes` is small while the old-gen `reclaimedBytes` is also small, both young and old reclamation are constrained by the same root cause — the heap is too full overall.
+
+#### Why existing events don't cover this
+
+- `jdk.GCHeapSummary` / `jdk.ShenandoahHeapSummary`: record heap state before/after GC but not the internal CSet sizing inputs (`free_target`, `max_cset`, `min_garbage`). The free space is derivable from heap summary events, but the target, maximum, and minimum thresholds that the heuristic uses to size the CSet are not.
+- `jdk.ShenandoahCollectionDecision` (proposal #4): covers the decision to start the GC cycle (what trigger type fired), not the CSet sizing inside `choose_collection_set_from_regiondata()`. These are different decisions at different points in the control flow.
+- `jdk.ShenandoahReclaimProgress` (proposal #5): covers the degenerated/full GC early-exit check. It does not cover young-collection CSet sizing.
+- No existing JFR event exposes `free_target`, `actual_free`, `max_cset`, or `min_garbage` from `choose_collection_set_from_regiondata()`. These four values determine how aggressive each young collection is, yet they have no JFR representation today.
+
+#### External references
+
+[JEP 521: Generational Shenandoah](https://openjdk.org/jeps/521) — describes the adaptive heuristic model:
+
+> "The generational mode uses an adaptive heuristic to decide when to collect and which regions to include in each collection. The heuristic tracks allocation rate, available free space, and evacuation capacity to size each collection."
+
+[`shenandoahAdaptiveHeuristics.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp) — `choose_collection_set_from_regiondata()` is the single function that computes all four fields and emits the existing `log_info(gc,ergo)` line. The JFR event is a direct parallel of the existing log message.
+
+#### Open questions / upstream concerns
+
+1. **Relationship to `jdk.ShenandoahCollectionDecision`**: both events fire at young collection start, but from different functions and with different data. `ShenandoahCollectionDecision` fires from the control thread entry to the cycle (`shenandoahGenerationalControlThread.cpp:374`); `ShenandoahAdaptiveCSetSelection` fires from inside the heuristic's region-selection call. These are different stages. They share `gcId` and should be documented as complementary: `ShenandoahCollectionDecision` tells you *why* the collection started; `ShenandoahAdaptiveCSetSelection` tells you *how it was sized*.
+2. **Non-generational mode**: `ShenandoahAdaptiveHeuristics` is the heuristic for the young generation in generational mode. In non-generational mode, `choose_collection_set_from_regiondata()` is called but the log output has the same form. The event can be emitted unconditionally and will fire in both modes; a `mode` field (generational/non-generational) is optional but may help consumers distinguish the two contexts.
+
+---
+
 ## Appendix: Source File Reference
 
 All source links use `https://github.com/openjdk/jdk/blob/master/` as base. Line numbers are approximate for functions that span ranges; exact lines are given where a specific log statement or code point is the anchor.
@@ -1987,5 +2189,7 @@ All source links use `https://github.com/openjdk/jdk/blob/master/` as base. Line
 | jdk.G1HeapResize | [`src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/g1/g1HeapSizingPolicy.cpp) |
 | jdk.ZDirectorRule | [`src/hotspot/share/gc/z/zDirector.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zDirector.cpp) |
 | jdk.PSAdaptiveSizePolicy | [`src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psAdaptiveSizePolicy.cpp), [`src/hotspot/share/gc/parallel/psYoungGen.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/parallel/psYoungGen.cpp) |
+| jdk.ShenandoahOldEvacuation | [`src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahOldHeuristics.cpp) |
+| jdk.ShenandoahAdaptiveCSetSelection | [`src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/heuristics/shenandoahAdaptiveHeuristics.cpp) |
 | jdk.StringDeduplicationStatistics (removed) | [`src/hotspot/share/gc/shared/stringdedup/stringDedupStat.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shared/stringdedup/stringDedupStat.cpp) |
 | jdk.ShenandoahCardStatistics (blocked) | [`src/hotspot/share/gc/shenandoah/shenandoahCardStats.cpp`](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/shenandoah/shenandoahCardStats.cpp) |
