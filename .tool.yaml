@@ -1,0 +1,16 @@
+tag: ready
+github_pages: https://parttimenerd.github.io/jdklogs/
+tagline: Interactive browser tool for exploring OpenJDK's -Xlog subsystem. Enter a log config and
+  see exactly which log statements match — with source context, GitHub permalinks, sample output
+  from benchmark runs, and a volume estimate. Use it when you are tuning GC, JIT, or other -Xlog
+  flags and want to understand what output you will get before deploying.
+tagline_short: Interactive browser tool to explore -Xlog configs — see which statements match before deploying.
+features:
+- Config search with autocomplete over all -Xlog tags and levels
+- Selector wizard — toggle tags on/off without knowing the syntax
+- Firing log sites grouped by file with surrounding source context and GitHub permalinks
+- Real sample output captured from benchmark runs (G1, ZGC, Parallel)
+- Volume estimate (≈ MB/hour) per tag to gauge logging overhead
+- Coverage across JDK versions from LTS to master
+no_release: true
+note: Data is regenerated monthly from the OpenJDK source and redeployed to GitHub Pages.
